@@ -516,8 +516,14 @@ function rewriteUnsafeLinks(text) {
 }
 
 function neutralizeText(text) {
-  // Keep xmd's own metrics markup: exactly `<sub>` / `</sub>` (no attributes).
-  return rewriteUnsafeLinks(text.replace(/<(?=[A-Za-z!/?])(?!sub>|\/sub>)/g, '&lt;'));
+  // Keep xmd's own metrics markup (`<sub>` / `</sub>`) and CommonMark autolinks
+  // `<https://...>`, `<http://...>`, `<mailto:...>` (no spaces inside).
+  return rewriteUnsafeLinks(text.replace(/<(?=[A-Za-z!/?])/g, (m, offset, s) => {
+    const rest = s.slice(offset);
+    if (rest.startsWith('<sub>') || rest.startsWith('</sub>')) return m;
+    if (/^<(https?:\/\/[^>\s]+|mailto:[^>\s]+)>/i.test(rest)) return m;
+    return '&lt;';
+  }));
 }
 
 function neutralizeLine(line) {
@@ -612,7 +618,12 @@ export async function fetchPage(input, { signal, fetchImpl = fetch, resolveHost,
     const response = await fetchImpl(current.href, {
       method: 'GET',
       redirect: 'manual',
-      headers: { 'User-Agent': USER_AGENT, Accept: 'text/html,application/xhtml+xml,text/plain;q=0.9,*/*;q=0.1' },
+      // Content negotiation: prefer native Markdown when the origin supports it.
+      // https://developers.cloudflare.com/fundamentals/reference/markdown-for-agents/
+      headers: {
+        'User-Agent': USER_AGENT,
+        Accept: 'text/markdown, text/html;q=0.9, application/xhtml+xml;q=0.9, text/plain;q=0.8, */*;q=0.1',
+      },
       signal: combinedSignal(signal),
     });
     if ((response.status >= 300 && response.status < 400) || response.type === 'opaqueredirect') {
@@ -641,8 +652,59 @@ export async function fetchPage(input, { signal, fetchImpl = fetch, resolveHost,
   }
 }
 
+export function nativeMarkdown(body) {
+  return capMarkdown(neutralizeMarkdown(String(body ?? '')));
+}
+
+export function markdownAlternateHref(html, baseUrl) {
+  const re = /<link\b([^>]*)>/gi;
+  let m;
+  while ((m = re.exec(String(html ?? '')))) {
+    const attrs = parseAttrs(m[1]);
+    const rel = String(attrs.rel || '').toLowerCase().split(/\s+/).filter(Boolean);
+    if (!rel.includes('alternate')) continue;
+    const type = String(attrs.type || '').split(';')[0].trim().toLowerCase();
+    if (type !== 'text/markdown') continue;
+    if (!attrs.href) continue;
+    try { return new URL(attrs.href, baseUrl).href; }
+    catch { continue; }
+  }
+  return null;
+}
+
+// llms.txt: same URL with .md appended (page.html.md), directories get index.md,
+// or <link rel="alternate" type="text/markdown">. Query string is dropped.
+// https://llmstxt.org/
+export function llmsMarkdownUrl(href) {
+  const url = new URL(href);
+  url.search = '';
+  url.hash = '';
+  let path = url.pathname || '/';
+  if (path.endsWith('/')) path += 'index.md';
+  else if (/\.html?$/i.test(path)) path += '.md';
+  else path += '.md';
+  url.pathname = path;
+  return url.href;
+}
+
+export async function tryNativeMarkdown(page, opts) {
+  if (page.media === 'text/markdown') return nativeMarkdown(page.body);
+  if (page.media !== 'text/html' && page.media !== 'application/xhtml+xml') return null;
+  const candidate = markdownAlternateHref(page.body, page.finalUrl) || llmsMarkdownUrl(page.finalUrl);
+  if (!candidate) return null;
+  try {
+    const extra = await fetchPage(candidate, opts);
+    if (extra.media === 'text/markdown') return nativeMarkdown(extra.body);
+  } catch {
+    // Missing, blocked, or not markdown — ignore and convert HTML.
+  }
+  return null;
+}
+
 export async function renderPage(input, opts) {
   const page = await fetchPage(input, opts);
-  if (page.media === 'text/plain' || page.media === 'text/markdown') return wrapPage(page.title, page.finalUrl, page.body);
+  const native = await tryNativeMarkdown(page, opts);
+  if (native != null) return native;
+  if (page.media === 'text/plain') return wrapPage(page.title, page.finalUrl, page.body);
   return wrapPage(page.title, page.finalUrl, htmlToMarkdown(page.body, page.finalUrl));
 }

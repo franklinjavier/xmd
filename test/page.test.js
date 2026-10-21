@@ -210,11 +210,13 @@ test('Worker GET / usage, X post, page cache, blocked loopback', async () => {
   assert.equal(first.status, 200);
   assert.equal(first.headers.get('x-xmd-cache'), 'MISS');
   assert.equal(first.headers.get('x-xmd-engine'), 'fallback');
+  assert.equal(first.headers.get('x-xmd-source'), 'fallback');
   assert.equal(await first.text(), '# page:https://example.com/');
   const second = await call('/?url=https://example.com/', { cache, limiter, render, renderPage: renderPageFn, resolveHost: allow });
   assert.equal(second.status, 200);
   assert.equal(second.headers.get('x-xmd-cache'), 'HIT');
   assert.equal(second.headers.get('x-xmd-engine'), 'fallback');
+  assert.equal(second.headers.get('x-xmd-source'), 'fallback');
   assert.equal(pageCalls, 1);
 
   let forbidden = 0;
@@ -348,6 +350,9 @@ test('neutralizeMarkdown escapes tags and unsafe link schemes; fences keep tags'
   assert.equal(neutralizeMarkdown('[mail](mailto:a@b.com)'), '[mail](mailto:a@b.com)');
   assert.equal(neutralizeMarkdown('<sub>❤️ 1</sub>'), '<sub>❤️ 1</sub>');
   assert.equal(neutralizeMarkdown('<sub onclick="x">'), '&lt;sub onclick="x">');
+  assert.equal(neutralizeMarkdown('- <https://github.com/x>'), '- <https://github.com/x>');
+  assert.equal(neutralizeMarkdown('<b>'), '&lt;b>');
+  assert.equal(neutralizeMarkdown('```jsx\n<div className="x">\n```'), '```jsx\n<div className="x">\n```');
 });
 
 test('stripHiddenElements drops hidden, aria-hidden, and display:none', () => {
@@ -387,4 +392,125 @@ test('Worker blocked IPv6 transition addresses are 400; global unicast passes li
   }
   assert.equal(isBlockedHostSync('http://[2606:4700:4700::1111]/'), false);
   assert.equal(canonicalizePageUrl('https://example.com/a?utm_campaign=x&keep=1#hash'), 'https://example.com/a?keep=1');
+});
+
+test('native markdown: text/markdown is returned as-is with x-xmd-source native', async () => {
+  const md = '# Hello\n\n- <https://github.com/x>\n';
+  let fetches = 0;
+  let aiCalls = 0;
+  const cache = memoryCache();
+  const limiter = createMemoryLimiter();
+  const fetchImpl = async (url, init) => {
+    fetches += 1;
+    assert.match(init.headers.Accept, /text\/markdown/);
+    return new Response(md, { status: 200, headers: { 'content-type': 'text/markdown; charset=utf-8' } });
+  };
+  const env = { AI: { async toMarkdown() { aiCalls += 1; return [{ format: 'markdown', data: 'nope' }]; } } };
+  const miss = await call('/?url=https://example.com/readme.md', { cache, limiter, env, fetchImpl, resolveHost: allow });
+  assert.equal(miss.status, 200);
+  assert.equal(miss.headers.get('x-xmd-source'), 'native');
+  assert.equal(miss.headers.get('x-xmd-engine'), 'native');
+  assert.equal(await miss.text(), md);
+  assert.equal(fetches, 1);
+  assert.equal(aiCalls, 0);
+  const hit = await call('/?url=https://example.com/readme.md', { cache, limiter, env, fetchImpl, resolveHost: allow });
+  assert.equal(hit.headers.get('x-xmd-cache'), 'HIT');
+  assert.equal(hit.headers.get('x-xmd-source'), 'native');
+  assert.equal(fetches, 1);
+});
+
+test('native markdown: rel=alternate text/markdown is fetched once', async () => {
+  const html = '<html><head><link rel="stylesheet alternate" type="text/markdown" href="/x.md"></head><body><p>ignore</p></body></html>';
+  const md = '# From link\n';
+  const urls = [];
+  let aiCalls = 0;
+  const fetchImpl = async url => {
+    urls.push(String(url));
+    if (String(url).endsWith('/x.md')) {
+      return new Response(md, { status: 200, headers: { 'content-type': 'text/markdown' } });
+    }
+    return new Response(html, { status: 200, headers: { 'content-type': 'text/html' } });
+  };
+  const env = { AI: { async toMarkdown() { aiCalls += 1; return [{ format: 'markdown', data: 'nope' }]; } } };
+  const res = await call('/?url=https://example.com/page', {
+    cache: memoryCache(), limiter: createMemoryLimiter(), env, fetchImpl, resolveHost: allow,
+  });
+  assert.equal(res.status, 200);
+  assert.equal(res.headers.get('x-xmd-source'), 'native');
+  assert.equal(await res.text(), md);
+  assert.deepEqual(urls, ['https://example.com/page', 'https://example.com/x.md']);
+  assert.equal(aiCalls, 0);
+});
+
+test('native markdown: llms.txt .md URL for directories and .html pages', async () => {
+  const html = '<html><body><p>article</p></body></html>';
+  const md = '# Index\n';
+  const urls = [];
+  const fetchImpl = async url => {
+    urls.push(String(url));
+    if (String(url).endsWith('.md')) {
+      return new Response(md, { status: 200, headers: { 'content-type': 'text/markdown' } });
+    }
+    return new Response(html, { status: 200, headers: { 'content-type': 'text/html' } });
+  };
+  const env = { AI: { async toMarkdown() { return [{ format: 'markdown', data: 'nope' }]; } } };
+  const dir = await call('/?url=https://site.test/blog/post/', {
+    cache: memoryCache(), limiter: createMemoryLimiter(), env, fetchImpl, resolveHost: allow,
+  });
+  assert.equal(dir.headers.get('x-xmd-source'), 'native');
+  assert.equal(await dir.text(), md);
+  assert.deepEqual(urls, ['https://site.test/blog/post/', 'https://site.test/blog/post/index.md']);
+  urls.length = 0;
+  const page = await call('/?url=https://site.test/page.html', {
+    cache: memoryCache(), limiter: createMemoryLimiter(), env, fetchImpl, resolveHost: allow,
+  });
+  assert.equal(page.headers.get('x-xmd-source'), 'native');
+  assert.deepEqual(urls, ['https://site.test/page.html', 'https://site.test/page.html.md']);
+});
+
+test('native markdown: non-markdown or 404 candidate falls back to AI with 2 fetches', async () => {
+  const html = '<html><head><title>Hello</title></head><body><p>' + 'word '.repeat(80) + '</p></body></html>';
+  const urls = [];
+  let aiCalls = 0;
+  const fetchImpl = async url => {
+    urls.push(String(url));
+    if (String(url).endsWith('.md')) {
+      if (String(url).includes('gone')) return new Response('nope', { status: 404 });
+      return new Response('<p>not md</p>', { status: 200, headers: { 'content-type': 'text/html' } });
+    }
+    return new Response(html, { status: 200, headers: { 'content-type': 'text/html' } });
+  };
+  const env = { AI: { async toMarkdown() { aiCalls += 1; return [{ format: 'markdown', data: '# Hello\n\n' + 'x'.repeat(300) }]; } } };
+  const htmlCand = await call('/?url=https://example.com/as-html', {
+    cache: memoryCache(), limiter: createMemoryLimiter(), env, fetchImpl, resolveHost: allow,
+  });
+  assert.equal(htmlCand.headers.get('x-xmd-source'), 'ai');
+  assert.equal(urls.length, 2);
+  assert.equal(aiCalls, 1);
+  urls.length = 0;
+  aiCalls = 0;
+  const missing = await call('/?url=https://example.com/gone', {
+    cache: memoryCache(), limiter: createMemoryLimiter(), env, fetchImpl, resolveHost: allow,
+  });
+  assert.equal(missing.headers.get('x-xmd-source'), 'ai');
+  assert.equal(urls.length, 2);
+  assert.equal(aiCalls, 1);
+});
+
+test('native markdown: blocked alternate href is not fetched', async () => {
+  const html = '<html><head><link rel="alternate" type="text/markdown" href="http://127.0.0.1/x.md"></head><body><p>' + 'word '.repeat(80) + '</p></body></html>';
+  const urls = [];
+  let aiCalls = 0;
+  const fetchImpl = async url => {
+    urls.push(String(url));
+    return new Response(html, { status: 200, headers: { 'content-type': 'text/html' } });
+  };
+  const env = { AI: { async toMarkdown() { aiCalls += 1; return [{ format: 'markdown', data: '# Hello\n\n' + 'x'.repeat(300) }]; } } };
+  const res = await call('/?url=https://example.com/blocked-md', {
+    cache: memoryCache(), limiter: createMemoryLimiter(), env, fetchImpl, resolveHost: allow,
+  });
+  assert.equal(res.status, 200);
+  assert.equal(res.headers.get('x-xmd-source'), 'ai');
+  assert.deepEqual(urls, ['https://example.com/blocked-md']);
+  assert.equal(aiCalls, 1);
 });

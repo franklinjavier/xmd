@@ -6,6 +6,8 @@ Turn X (Twitter) posts into clean Markdown, via the public FxTwitter API. No X l
 
 Live at [https://xmd.imfrank.dev](https://xmd.imfrank.dev). `GET /` is a landing page. Usage: `https://xmd.imfrank.dev/?url=<link>` (scheme optional, e.g. `?url=example.com`); health check: `https://xmd.imfrank.dev/health`. Share image: `/og.png`. Chrome extension installer: `/extension.sh`.
 
+xmd first asks the site for Markdown (`Accept: text/markdown`, `rel=alternate`, `.md` URL per [llms.txt](https://llmstxt.org/)), then Workers AI, then the browser; `x-xmd-source` tells which.
+
 ## HTTP API
 
 - `GET /?url=<any http(s) URL>` — web page or X post
@@ -69,14 +71,15 @@ Two layers: a per-isolate in-memory fixed window (30 uncached requests / 60 s pe
 
 `GET /?url=<any url>` fetches a public http(s) page and returns Markdown (`text/markdown; charset=utf-8`). If the URL is an X/Twitter post, it is handled exactly like `/md?url=...&mode=` (optional `mode`, default `post`). `GET /` with no `url` returns a short usage list.
 
-On the hosted Worker, HTML is converted by Cloudflare Workers AI Markdown Conversion (`env.AI.toMarkdown`, free for HTML). JS-only or empty pages are rendered with Cloudflare Browser Rendering (free plan: 10 browser-minutes per day, 3 concurrent), behind a separate small budget (3/min per IP, a per-location global cap, and a best-effort ~40/day cap). Daily quota exhausted: `503` with `Retry-After` until next UTC midnight and `x-xmd-browser-error: quota`. Per-IP/global budget exceeded: fallback Markdown with `x-xmd-browser-error: budget`, or `429` if there is no visible text. Too many new or concurrent browsers: `503` with `Retry-After: 60` and `x-xmd-browser-error: busy`. The built-in HTML-to-Markdown converter is the last-resort fallback, and is what the CLI and local server use.
+On the hosted Worker, HTML is converted by Cloudflare Workers AI Markdown Conversion (`env.AI.toMarkdown`, free for HTML) only after native Markdown is unavailable. JS-only or empty pages are rendered with Cloudflare Browser Rendering (free plan: 10 browser-minutes per day, 3 concurrent), behind a separate small budget (3/min per IP, a per-location global cap, and a best-effort ~40/day cap). Daily quota exhausted: `503` with `Retry-After` until next UTC midnight and `x-xmd-browser-error: quota`. Per-IP/global budget exceeded: fallback Markdown with `x-xmd-browser-error: budget`, or `429` if there is no visible text. Too many new or concurrent browsers: `503` with `Retry-After: 60` and `x-xmd-browser-error: busy`. The built-in HTML-to-Markdown converter is the last-resort fallback, and is what the CLI and local server use after the same native-Markdown probes.
 
-Every `/?url=` and `/md` response includes `x-xmd-engine`:
+Every `/?url=` and `/md` response includes `x-xmd-engine` and `x-xmd-source` (same value):
 
+- `native` — site-provided Markdown (`Accept`, `rel=alternate`, or `.md` URL)
 - `x` — X/Twitter post
 - `ai` — Workers AI Markdown Conversion
 - `browser` — Browser Rendering (then AI or the built-in converter)
-- `fallback` — built-in converter, including `text/plain` and `text/markdown` passthrough
+- `fallback` — built-in converter, including `text/plain` passthrough
 
 SSRF protections: only http/https; no userinfo; ports 80/443 only; loopback, private, link-local, metadata, and special-use addresses are refused (including decimal/hex/octal IPv4 and IPv4-mapped IPv6); hostnames such as `localhost`, `*.internal`, `*.ts.net`, and `*.workers.dev` are refused; DNS-over-HTTPS is checked so a name that resolves to a blocked address is refused. At most 5 redirects, each hop re-validated. Body cap 2 MB. Allowed types: HTML, XHTML, plain text, Markdown; anything else is `415`.
 

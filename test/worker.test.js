@@ -220,6 +220,7 @@ test('GET /?url= X post and /md set x-xmd-engine x; page HIT keeps engine', asyn
   const x = await call('/?url=https://x.com/jack/status/55', { cache, limiter, render: async () => '# xpost' });
   assert.equal(x.status, 200);
   assert.equal(x.headers.get('x-xmd-engine'), 'x');
+  assert.equal(x.headers.get('x-xmd-source'), 'x');
 
   const html = `<html><head><title>Hello</title></head><body><p>${'word '.repeat(80)}</p></body></html>`;
   const fetchImpl = async () => new Response(html, { status: 200, headers: { 'content-type': 'text/html' } });
@@ -237,10 +238,12 @@ test('GET /?url= X post and /md set x-xmd-engine x; page HIT keeps engine', asyn
   assert.equal(miss.status, 200);
   assert.equal(miss.headers.get('x-xmd-cache'), 'MISS');
   assert.equal(miss.headers.get('x-xmd-engine'), 'ai');
+  assert.equal(miss.headers.get('x-xmd-source'), 'ai');
   const hit = await call('/?url=https://example.com/cached', { cache, limiter, env, fetchImpl, resolveHost: allowHost });
   assert.equal(hit.status, 200);
   assert.equal(hit.headers.get('x-xmd-cache'), 'HIT');
   assert.equal(hit.headers.get('x-xmd-engine'), 'ai');
+  assert.equal(hit.headers.get('x-xmd-source'), 'ai');
 });
 
 test('browser errors: quota, busy, failed; SSRF never calls AI or browserRender', async () => {

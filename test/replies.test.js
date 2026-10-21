@@ -19,9 +19,9 @@ test('replies filters descendants, sorts, deduplicates, and collects references'
  assert.match(body,/### 1\/3 · Alice Name \(@alice\)/);
  assert.match(body,/https:\/\/example.com\/a%29%20b.jpg/);
  assert.match(body,/> second line/);
- assert.match(refs,/1\. @alice — &lt;https:\/\/x.com\/alice\/status\/10> · ❤️ 5/);
- assert.match(refs,/2\. @bob — &lt;https:\/\/x.com\/bob\/status\/11> · 👁 42/);
- assert.match(refs,/3\. @carol — &lt;https:\/\/x.com\/carol\/status\/12>/);
+ assert.match(refs,/1\. @alice — <https:\/\/x.com\/alice\/status\/10> · ❤️ 5/);
+ assert.match(refs,/2\. @bob — <https:\/\/x.com\/bob\/status\/11> · 👁 42/);
+ assert.match(refs,/3\. @carol — <https:\/\/x.com\/carol\/status\/12>/);
  assert.match(md,/more replies may exist/);
 });
 

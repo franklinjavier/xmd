@@ -7,7 +7,7 @@ import { LANDING_HTML } from './landing.js';
 import {
   fetchPage, htmlToMarkdown, extractTitle, looksJsOnly, visibleText, wrapPage,
   validateTarget, normalizeTargetUrl, canonicalizePageUrl, capMarkdown,
-  stripHiddenElements, UnsupportedTypeError,
+  stripHiddenElements, tryNativeMarkdown, UnsupportedTypeError,
 } from './page.js';
 
 const decodedIcons = new Map();
@@ -275,15 +275,18 @@ function budgetFallback(title, finalUrl, markdown, engine) {
 }
 
 export async function convertWebPage(input, env, deps, { signal, selfHost, ip = 'unknown', cacheKey: jobKey } = {}) {
-  const page = await fetchPage(input, {
+  const fetchOpts = {
     signal,
     fetchImpl: deps.fetchImpl,
     resolveHost: deps.resolveHost,
     selfHost,
-  });
-  if (page.media === 'text/plain' || page.media === 'text/markdown') {
+  };
+  const page = await fetchPage(input, fetchOpts);
+  if (page.media === 'text/plain') {
     return { body: wrapPage(page.title, page.finalUrl, page.body), engine: 'fallback' };
   }
+  const native = await tryNativeMarkdown(page, fetchOpts);
+  if (native != null) return { body: native, engine: 'native' };
   let markdown = await tryAiMarkdown(env, page.body, page.finalUrl);
   let engine = markdown ? 'ai' : 'fallback';
   if (!markdown) markdown = htmlToMarkdown(page.body, page.finalUrl);
@@ -390,6 +393,7 @@ async function serveRendered(request, env, ctx, deps, cache, key, work, defaultE
       ...TEXT_SECURITY,
       'x-xmd-cache': 'MISS',
       'x-xmd-engine': engine,
+      'x-xmd-source': engine,
     };
     if (result && typeof result === 'object' && result.browserError) {
       headers['x-xmd-browser-error'] = result.browserError;
