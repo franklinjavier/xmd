@@ -8,7 +8,7 @@ export const LANDING_HTML = `<!doctype html>
 <link rel="icon" href="/favicon.ico" sizes="any">
 <link rel="icon" type="image/png" href="/favicon.png">
 <link rel="apple-touch-icon" href="/apple-touch-icon.png">
-<meta name="theme-color" content="#0a0b0d">
+<meta name="theme-color" content="#fdfdfd">
 <meta property="og:title" content="xmd: links to clean Markdown">
 <meta property="og:description" content="Turn any link (X posts included) into clean Markdown.">
 <meta property="og:url" content="https://xmd.imfrank.dev/">
@@ -24,58 +24,76 @@ export const LANDING_HTML = `<!doctype html>
 <meta name="twitter:description" content="Turn any link (X posts included) into clean Markdown.">
 <meta name="twitter:image" content="https://xmd.imfrank.dev/og.png">
 <style>
-:root { color-scheme: dark; }
+:root {
+  color-scheme: light;
+  --background: oklch(0.995 0 0);
+  --foreground: oklch(0.18 0.005 286);
+  --muted: oklch(0.955 0.004 286);
+  --muted-foreground: oklch(0.55 0.012 286);
+  --faint-foreground: oklch(0.7 0.01 286);
+  --border: oklch(0.915 0.005 286);
+  --ring: oklch(0.705 0.015 286);
+  --radius: 0.625rem;
+  --font-sans: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", sans-serif;
+  --font-mono: ui-monospace, "SF Mono", SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
+}
 * { box-sizing: border-box; }
 html, body {
   margin: 0;
-  background: #0a0b0d;
-  color: #e6e8ec;
-  font: 16px/1.5 system-ui, -apple-system, "Segoe UI", Roboto, Ubuntu, Cantarell, "Noto Sans", sans-serif;
+  background: var(--background);
+  color: var(--foreground);
+  font: 14px/1.65 var(--font-sans);
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
 }
 body {
   min-height: 100vh;
   display: flex;
   align-items: center;
   justify-content: center;
-  padding: 24px;
+  padding: 48px 16px;
 }
-main {
-  width: 100%;
-  max-width: 640px;
-  background: #141518;
-  border: 1px solid #23252a;
-  border-radius: 16px;
-  padding: 32px;
-}
-header { display: flex; align-items: center; gap: 16px; margin-bottom: 8px; }
-header img { display: block; border-radius: 16px; }
-h1 { margin: 0; font-size: 1.75rem; font-weight: 650; letter-spacing: -0.02em; }
-.lede { margin: 0 0 1.5rem; color: #c5c9d1; }
+main { width: 100%; max-width: 560px; }
+header { display: flex; align-items: center; gap: 12px; margin-bottom: 12px; }
+header img { display: block; width: 40px; height: 40px; border-radius: calc(var(--radius) * 1.4); }
+h1 { margin: 0; font-size: 24px; line-height: 1.2; font-weight: 500; letter-spacing: -0.02em; }
+.lede { margin: 0 0 32px; color: var(--muted-foreground); font-size: 15px; }
 h2 {
-  margin: 1.25rem 0 0.4rem;
-  font-size: 0.8rem;
-  font-weight: 600;
-  color: #9aa3ad;
+  margin: 24px 0 8px;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  line-height: 16px;
+  font-weight: 400;
+  letter-spacing: 0.08em;
   text-transform: uppercase;
-  letter-spacing: 0.06em;
+  color: var(--muted-foreground);
 }
 pre {
   margin: 0;
-  background: #0a0b0d;
-  border: 1px solid #23252a;
-  border-radius: 8px;
-  padding: 12px 14px;
+  background: color-mix(in oklch, var(--muted) 25%, transparent);
+  border: 1px solid var(--border);
+  border-radius: calc(var(--radius) * 1.4);
+  padding: 12px 16px;
   overflow-x: auto;
 }
 code {
-  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-  font-size: 0.85rem;
+  font-family: var(--font-mono);
+  font-size: 13px;
+  line-height: 1.6;
   white-space: pre-wrap;
   word-break: break-word;
-  color: #e6e8ec;
+  color: var(--foreground);
 }
-footer { margin-top: 1.75rem; }
-a { color: #2e8cff; }
+footer { margin-top: 32px; font-size: 13px; }
+a {
+  color: var(--muted-foreground);
+  text-decoration: underline;
+  text-decoration-color: var(--border);
+  text-underline-offset: 3px;
+  transition: color 0.2s, text-decoration-color 0.2s;
+}
+a:hover { color: var(--foreground); text-decoration-color: var(--ring); }
+a:focus-visible { outline: 2px solid color-mix(in oklch, var(--ring) 50%, transparent); outline-offset: 2px; border-radius: 4px; }
 </style>
 </head>
 <body>
