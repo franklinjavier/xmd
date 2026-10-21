@@ -1,0 +1,6 @@
+[
+ {"id":"1","text":"Root","author":{"name":"Alice","screen_name":"alice"},"created_at":"Wed Oct 14 17:23:12 +0000 2026","created_timestamp":1791998592,"likes":0,"views":12,"replying_to":null,"media":{}},
+ {"id":"2","text":"Short","raw_text":{"text":"A longer note\nwith a second line"},"is_note_tweet":true,"author":{"name":"Alice","screen_name":"ALICE"},"created_timestamp":1791998593,"replying_to":{"screen_name":"alice","status":"1","url":"https://x.com/alice/status/1"},"media":{"photos":[{"url":"https://example.com/photo.jpg"}],"videos":[{"url":"https://example.com/low.mp4","formats":[{"url":"https://example.com/best.mp4","container":"mp4","bitrate":200}]}]},"quote":{"id":"9","author":{"name":"Bob","screen_name":"bob"},"text":"Quoted\nsecond line","url":"https://x.com/bob/status/9","quote":{"text":"Do not render nested quote"}}},
+ {"id":"3","text":"Other reply","author":{"name":"Bob","screen_name":"bob"},"created_timestamp":1791998594,"replying_to":{"screen_name":"alice","status":"2"}},
+ {"id":"4","text":"Alice replying via Bob","author":{"screen_name":"alice"},"created_timestamp":1791998595,"replying_to":{"screen_name":"bob","status":"3"}}
+]

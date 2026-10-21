@@ -1,0 +1,17 @@
+{
+ "code":200,
+ "status":{"id":"10","text":"Linked post","author":{"name":"[Alice]\nName","screen_name":"alice"},"likes":5,"created_timestamp":100,"replying_to":{"status":"1"},"media":{"photos":[{"url":"javascript:bad"},{"url":"https://example.com/a) b.jpg"}]},"quote":{"id":"90","text":"Quote\nsecond line","author":{"screen_name":"quoted"},"url":"https://x.com/quoted/status/90"}},
+ "thread":[{"id":"1","text":"Ancestor"}],
+ "replies":[
+  {"id":"12","text":"Later descendant","author":{"screen_name":"carol"},"created_timestamp":103,"replying_to":{"status":"11"}},
+  {"id":"20","text":"Sibling excluded","author":{"screen_name":"bob"},"created_timestamp":101,"replying_to":{"status":"1"}},
+  {"id":"11","text":"Earlier descendant","author":{"screen_name":"bob"},"views":42,"created_timestamp":102,"replying_to":{"status":"10"}},
+  {"id":"11","text":"Duplicate excluded","replying_to":{"status":"10"}},
+  {"id":"bad","text":"Invalid id excluded","replying_to":{"status":"10"}},
+  {"id":"30","text":"Orphan excluded","replying_to":{"status":"99"}},
+  {"id":"31","text":"Cycle excluded","replying_to":{"status":"32"}},
+  {"id":"32","text":"Cycle excluded","replying_to":{"status":"31"}},
+  {"id":"10","text":"Duplicate linked excluded","replying_to":{"status":"11"}}
+ ],
+ "cursor":{"bottom":"next-page"}
+}

@@ -1,0 +1,31 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>xmd</title>
+  <style>
+    body {
+      font: 13px/1.4 system-ui, sans-serif;
+      margin: 10px 12px;
+      min-width: 240px;
+      max-width: 360px;
+      color: #111827;
+    }
+    .status { font-weight: 600; margin-bottom: 6px; }
+    .status.err { color: #b91c1c; }
+    .link {
+      font: 11px/1.35 ui-monospace, SFMono-Regular, Menlo, monospace;
+      word-break: break-all;
+      color: #374151;
+      user-select: text;
+    }
+    .note { margin-top: 6px; color: #b91c1c; font-size: 12px; }
+  </style>
+</head>
+<body>
+  <div id="status" class="status"></div>
+  <div id="link" class="link"></div>
+  <div id="note" class="note"></div>
+  <script type="module" src="popup.js"></script>
+</body>
+</html>

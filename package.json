@@ -1,0 +1,22 @@
+{
+  "name": "xmd",
+  "version": "0.3.0",
+  "description": "Turn X (Twitter) posts into clean Markdown via the public FxTwitter API",
+  "license": "MIT",
+  "type": "module",
+  "bin": {
+    "xmd": "bin/xmd",
+    "x-md": "bin/x-md"
+  },
+  "scripts": {
+    "test": "node --test test/",
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy"
+  },
+  "engines": {
+    "node": ">=26"
+  },
+  "dependencies": {
+    "@cloudflare/puppeteer": "^1.4.0"
+  }
+}
