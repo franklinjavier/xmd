@@ -106,14 +106,14 @@ Exit codes: 2 usage/URL/blocked target, 3 unavailable post, 4 upstream/network, 
 
 ## Chrome extension
 
-The `extension/` folder is a Manifest V3 Chrome extension. Clicking the toolbar icon copies an `https://xmd.imfrank.dev/?url=...` link for the current tab (the link, not Markdown).
+The `extension/` folder is a Manifest V3 Chrome extension. Clicking the toolbar icon copies an `https://xmd.imfrank.dev/?url=...` link for the current tab (the link, not Markdown) and opens it in a new tab.
 
-Permissions:
+Permissions (unchanged):
 
 - `activeTab` — read the current tab URL only when you click the icon
 - `clipboardWrite` — put the link on the clipboard
 
-No `scripting` or host permissions: the popup runs after the click and already has the tab URL. Not on the Chrome Web Store.
+No `scripting`, host, or `tabs` permissions: the popup runs after the click and already has the tab URL; `tabs.create` does not need the `tabs` permission. Not on the Chrome Web Store.
 
 Install:
 
