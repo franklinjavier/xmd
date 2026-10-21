@@ -4,7 +4,7 @@ Turn X (Twitter) posts into clean Markdown, via the public FxTwitter API. No X l
 
 ## Hosted endpoint
 
-[https://xmd.imfrank.dev](https://xmd.imfrank.dev) (coming soon; until the domain is attached use [https://xmd.franklinjavier.workers.dev](https://xmd.franklinjavier.workers.dev)).
+Live at [https://xmd.imfrank.dev](https://xmd.imfrank.dev). Usage: `https://xmd.imfrank.dev/?url=<link>` (scheme optional, e.g. `?url=example.com`); health check: `https://xmd.imfrank.dev/health`.
 
 ## HTTP API
 
@@ -90,8 +90,8 @@ curl -G 'https://xmd.imfrank.dev/' --data-urlencode 'url=https://example.com'
 Requires Node >= 26.
 
 ```sh
-git clone https://github.com/franklinjavier/xmd && cd xmd && npm link
-# or: npm install -g github:franklinjavier/xmd
+npm install -g github:franklinjavier/xmd
+# or: git clone https://github.com/franklinjavier/xmd && cd xmd && npm link
 
 xmd https://x.com/jack/status/2110421175528775685
 xmd --mode ancestors 2110642522355638381

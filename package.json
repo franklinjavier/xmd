@@ -6,7 +6,7 @@
   "type": "module",
   "bin": {
     "xmd": "bin/xmd",
-    "x-md": "bin/x-md"
+    "x-md": "bin/xmd"
   },
   "scripts": {
     "test": "node --test test/",
