@@ -3,7 +3,7 @@ import { render as defaultRender, modes } from './modes.js';
 import { NotFoundError, NetworkError } from './fetch.js';
 import { VERSION } from './version.js';
 import { ICONS, EXTENSION_SH } from './icons.js';
-import { LANDING_HTML } from './landing.js';
+import { LANDING_HTML, LANDING_SCRIPT_HASH } from './landing.js';
 import {
   fetchPage, htmlToMarkdown, extractTitle, looksJsOnly, visibleText, wrapPage,
   validateTarget, normalizeTargetUrl, canonicalizePageUrl, capMarkdown,
@@ -48,7 +48,7 @@ const TEXT_SECURITY = {
 // proxied auto-injection reports to /cdn-cgi/rum ('self') and cloudflareinsights.com.
 // https://developers.cloudflare.com/web-analytics/faq/
 // https://developers.cloudflare.com/fundamentals/reference/policies-compliances/content-security-policies/
-const LANDING_CSP = "default-src 'none'; img-src 'self'; style-src 'unsafe-inline'; script-src https://static.cloudflareinsights.com; connect-src 'self' https://cloudflareinsights.com";
+const LANDING_CSP = `default-src 'none'; img-src 'self'; style-src 'unsafe-inline'; script-src '${LANDING_SCRIPT_HASH}' https://static.cloudflareinsights.com; connect-src 'self' https://cloudflareinsights.com`;
 
 let defaultLimiter;
 let defaultBrowserLimiter;

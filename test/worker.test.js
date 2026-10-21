@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { handle, createMemoryLimiter } from '../src/worker.js';
 import { NotFoundError, NetworkError } from '../src/fetch.js';
+import { createHash } from 'node:crypto';
 
 function memoryCache() {
   const store = new Map();
@@ -53,8 +54,13 @@ test('GET / landing HTML, /og.png, /extension.sh; /?url= stays markdown', async 
   const landing = await call('/', { render: async () => assert.fail('landing must not render') });
   assert.equal(landing.status, 200);
   assert.match(landing.headers.get('content-type'), /text\/html/);
-  assert.equal(landing.headers.get('content-security-policy'), "default-src 'none'; img-src 'self'; style-src 'unsafe-inline'; script-src https://static.cloudflareinsights.com; connect-src 'self' https://cloudflareinsights.com");
   const html = await landing.text();
+  // The inline playground script is allowed by its hash, and nothing else inline is.
+  const scripts = [...html.matchAll(/<script>([\s\S]*?)<\/script>/g)].map(m => m[1]);
+  assert.equal(scripts.length, 1);
+  const hash = createHash('sha256').update(scripts[0]).digest('base64');
+  assert.equal(landing.headers.get('content-security-policy'), `default-src 'none'; img-src 'self'; style-src 'unsafe-inline'; script-src 'sha256-${hash}' https://static.cloudflareinsights.com; connect-src 'self' https://cloudflareinsights.com`);
+  assert.match(html, /<form class="try" id="try" action="\/" method="get" target="_blank"/);
   assert.match(html, /og:image/);
   assert.match(html, /https:\/\/xmd\.imfrank\.dev\/og\.png/);
 
