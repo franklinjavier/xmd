@@ -29,6 +29,8 @@ const EXACT_HOSTS = new Set(['localhost', 'metadata.google.internal', 'xmd.imfra
 const ALLOWED_TYPES = new Set(['text/html', 'application/xhtml+xml', 'text/plain', 'text/markdown']);
 const OUTPUT_CAP = 200 * 1024;
 const BODY_CAP = 2 * 1024 * 1024;
+const MARKDOWN_CAP = 200_000;
+const TRACKING_PARAM = /^(utm_.*|fbclid|gclid|dclid|msclkid|mc_cid|mc_eid|ref_src|igshid)$/i;
 
 export function decodeEntities(text) {
   return String(text).replace(/&(#x[0-9a-fA-F]+|#\d+|[a-zA-Z]+);/g, (whole, ent) => {
@@ -85,14 +87,26 @@ function expandIPv6(host) {
 
 function ipv6Blocked(parts) {
   const z = n => parts.slice(0, n).every(x => x === 0);
-  if (parts.every(x => x === 0)) return true;
-  if (z(7) && parts[7] === 1) return true;
+  // IPv4-compatible ::/96 includes ::, ::1, and ::a.b.c.d (e.g. [::127.0.0.1] → [::7f00:1]).
+  if (z(6)) return true;
+  // IPv4-mapped ::ffff:0:0/96
+  if (z(5) && parts[5] === 0xffff) return true;
+  // NAT64 64:ff9b::/96 and local-use 64:ff9b:1::/48
+  if (parts[0] === 0x64 && parts[1] === 0xff9b && parts[2] === 0 && parts[3] === 0 && parts[4] === 0 && parts[5] === 0) return true;
+  if (parts[0] === 0x64 && parts[1] === 0xff9b && parts[2] === 1) return true;
+  // 6to4 2002::/16
+  if (parts[0] === 0x2002) return true;
+  // Teredo 2001::/32
+  if (parts[0] === 0x2001 && parts[1] === 0) return true;
+  // Documentation 2001:db8::/32
+  if (parts[0] === 0x2001 && parts[1] === 0xdb8) return true;
+  // Unique local fc00::/7, link-local fe80::/10, site-local fec0::/10, multicast ff00::/8
   if ((parts[0] & 0xfe00) === 0xfc00) return true;
   if ((parts[0] & 0xffc0) === 0xfe80) return true;
+  if ((parts[0] & 0xffc0) === 0xfec0) return true;
   if ((parts[0] & 0xff00) === 0xff00) return true;
-  if (z(5) && parts[5] === 0xffff) return true;
-  if (parts[0] === 0x64 && parts[1] === 0xff9b && parts[2] === 0 && parts[3] === 0 && parts[4] === 0 && parts[5] === 0) return true;
-  if (parts[0] === 0x2001 && parts[1] === 0xdb8) return true;
+  // Anything outside global unicast 2000::/3
+  if ((parts[0] & 0xe000) !== 0x2000) return true;
   return false;
 }
 
@@ -342,7 +356,7 @@ function convertFragment(html, baseUrl) {
 }
 
 export function htmlToMarkdown(html, baseUrl) {
-  const source = String(html ?? '');
+  const source = stripHiddenElements(String(html ?? ''));
   const fragment = pickMain(stripDropped(source));
   let md = convertFragment(fragment, baseUrl)
     .replace(/[ \t]+\n/g, '\n')
@@ -383,8 +397,174 @@ function decoderFor(contentType) {
   return new TextDecoder('utf-8');
 }
 
+export function capMarkdown(md) {
+  const s = String(md ?? '');
+  if (s.length <= MARKDOWN_CAP) return s;
+  return `${s.slice(0, MARKDOWN_CAP)}\n\n_[truncated by xmd]_\n`;
+}
+
+export function canonicalizePageUrl(href) {
+  const url = new URL(href);
+  url.hash = '';
+  for (const key of [...url.searchParams.keys()]) {
+    if (TRACKING_PARAM.test(key)) url.searchParams.delete(key);
+  }
+  return url.href;
+}
+
+function tagIsHidden(attrStr) {
+  const attrs = parseAttrs(attrStr);
+  if (Object.prototype.hasOwnProperty.call(attrs, 'hidden')) return true;
+  if (String(attrs['aria-hidden'] || '').toLowerCase() === 'true') return true;
+  const style = String(attrs.style || '');
+  if (/display\s*:\s*none/i.test(style) || /visibility\s*:\s*hidden/i.test(style)) return true;
+  return false;
+}
+
+export function stripHiddenElements(html) {
+  const s = String(html ?? '');
+  let out = '';
+  let i = 0;
+  while (i < s.length) {
+    const lt = s.indexOf('<', i);
+    if (lt < 0) { out += s.slice(i); break; }
+    out += s.slice(i, lt);
+    const gt = s.indexOf('>', lt + 1);
+    if (gt < 0) { out += s.slice(lt); break; }
+    const raw = s.slice(lt, gt + 1);
+    const m = /^<([a-zA-Z][a-zA-Z0-9]*)\b([^>]*)>$/.exec(raw);
+    if (!m) {
+      out += raw;
+      i = gt + 1;
+      continue;
+    }
+    const tag = m[1].toLowerCase();
+    const attrs = m[2];
+    const selfClose = /\/\s*$/.test(attrs) || VOID.has(tag);
+    if (!tagIsHidden(attrs)) {
+      out += raw;
+      i = gt + 1;
+      continue;
+    }
+    if (selfClose) {
+      i = gt + 1;
+      continue;
+    }
+    let depth = 1;
+    let j = gt + 1;
+    const openRe = new RegExp(`<${tag}\\b[^>]*>`, 'gi');
+    const closeRe = new RegExp(`</${tag}\\s*>`, 'gi');
+    while (j < s.length && depth > 0) {
+      openRe.lastIndex = j;
+      closeRe.lastIndex = j;
+      const open = openRe.exec(s);
+      const close = closeRe.exec(s);
+      if (!close) { j = s.length; break; }
+      if (open && open.index < close.index) {
+        if (!(/\/\s*>$/.test(open[0]) || VOID.has(tag))) depth += 1;
+        j = open.index + open[0].length;
+      } else {
+        depth -= 1;
+        j = close.index + close[0].length;
+      }
+    }
+    i = j;
+  }
+  return out;
+}
+
+function linkDestSafe(dest) {
+  const url = dest.trim().split(/\s+/)[0].replace(/^<|>$/g, '');
+  const sm = /^([a-zA-Z][a-zA-Z0-9+.-]*):/.exec(url);
+  if (!sm) return true;
+  const scheme = sm[1].toLowerCase();
+  return scheme === 'http' || scheme === 'https' || scheme === 'mailto';
+}
+
+function rewriteUnsafeLinks(text) {
+  let out = '';
+  let i = 0;
+  while (i < text.length) {
+    const idx = text.indexOf('](', i);
+    if (idx < 0) { out += text.slice(i); break; }
+    out += text.slice(i, idx);
+    let j = idx + 2;
+    let dest;
+    let end;
+    if (text[j] === '<') {
+      const gt = text.indexOf('>', j + 1);
+      const close = text.indexOf(')', gt < 0 ? j : gt);
+      if (gt < 0 || close < 0) { out += text.slice(idx); break; }
+      dest = text.slice(j + 1, gt);
+      end = close + 1;
+    } else {
+      let depth = 1;
+      let k = j;
+      while (k < text.length && depth > 0) {
+        if (text[k] === '(') depth += 1;
+        else if (text[k] === ')') depth -= 1;
+        k += 1;
+      }
+      if (depth !== 0) { out += text.slice(idx); break; }
+      dest = text.slice(j, k - 1);
+      end = k;
+    }
+    out += linkDestSafe(dest) ? text.slice(idx, end) : '](#)';
+    i = end;
+  }
+  return out;
+}
+
+function neutralizeText(text) {
+  // Keep xmd's own metrics markup: exactly `<sub>` / `</sub>` (no attributes).
+  return rewriteUnsafeLinks(text.replace(/<(?=[A-Za-z!/?])(?!sub>|\/sub>)/g, '&lt;'));
+}
+
+function neutralizeLine(line) {
+  let result = '';
+  let i = 0;
+  while (i < line.length) {
+    if (line[i] === '`') {
+      const end = line.indexOf('`', i + 1);
+      if (end < 0) {
+        result += neutralizeText(line.slice(i));
+        break;
+      }
+      result += line.slice(i, end + 1);
+      i = end + 1;
+      continue;
+    }
+    const next = line.indexOf('`', i);
+    const chunk = next < 0 ? line.slice(i) : line.slice(i, next);
+    result += neutralizeText(chunk);
+    i = next < 0 ? line.length : next;
+  }
+  return result;
+}
+
+export function neutralizeMarkdown(md) {
+  const lines = String(md ?? '').split('\n');
+  let fence = null;
+  const out = [];
+  for (const line of lines) {
+    if (fence) {
+      out.push(line);
+      if (line.trimStart().startsWith(fence)) fence = null;
+      continue;
+    }
+    const fm = /^(```|~~~)/.exec(line.trimStart());
+    if (fm) {
+      fence = fm[1];
+      out.push(line);
+      continue;
+    }
+    out.push(neutralizeLine(line));
+  }
+  return out.join('\n');
+}
+
 export function wrapPage(title, finalUrl, body) {
-  return `# ${title}\n\nSource: ${finalUrl}\n\n${String(body ?? '').trim()}\n`;
+  return capMarkdown(neutralizeMarkdown(`# ${title}\n\nSource: ${finalUrl}\n\n${String(body ?? '').trim()}\n`));
 }
 
 export function visibleText(markdown) {

@@ -18,14 +18,24 @@ function memoryCache() {
   };
 }
 
-async function call(path, { method = 'GET', ip, env = {}, ...deps } = {}) {
+async function call(path, { method = 'GET', ip, env = {}, browserLimiter, ...deps } = {}) {
   const pending = [];
   const ctx = { waitUntil(p) { pending.push(p); } };
   const headers = {};
   if (ip) headers['cf-connecting-ip'] = ip;
-  const response = await handle(new Request(`https://xmd.test${path}`, { method, headers }), env, ctx, { render: async () => 'markdown', ...deps });
+  const response = await handle(new Request(`https://xmd.test${path}`, { method, headers }), env, ctx, {
+    render: async () => 'markdown',
+    browserLimiter: browserLimiter ?? createMemoryLimiter({ limit: 1000 }),
+    ...deps,
+  });
   await Promise.all(pending);
   return response;
+}
+
+const TEXT_CSP = "default-src 'none'; frame-ancestors 'none'; sandbox";
+function assertTextSecurity(response) {
+  assert.equal(response.headers.get('x-content-type-options'), 'nosniff');
+  assert.equal(response.headers.get('content-security-policy'), TEXT_CSP);
 }
 
 test('GET /health returns 200 ok and is not cached', async () => {
@@ -36,13 +46,14 @@ test('GET /health returns 200 ok and is not cached', async () => {
   assert.match(response.headers.get('content-type'), /text\/plain/);
   assert.equal(response.headers.get('access-control-allow-origin'), '*');
   assert.equal(response.headers.get('x-xmd-cache'), null);
+  assertTextSecurity(response);
 });
 
 test('GET / landing HTML, /og.png, /extension.sh; /?url= stays markdown', async () => {
   const landing = await call('/', { render: async () => assert.fail('landing must not render') });
   assert.equal(landing.status, 200);
   assert.match(landing.headers.get('content-type'), /text\/html/);
-  assert.equal(landing.headers.get('content-security-policy'), "default-src 'none'; img-src 'self'; style-src 'unsafe-inline'");
+  assert.equal(landing.headers.get('content-security-policy'), "default-src 'none'; img-src 'self'; style-src 'unsafe-inline'; script-src https://static.cloudflareinsights.com; connect-src 'self' https://cloudflareinsights.com");
   const html = await landing.text();
   assert.match(html, /og:image/);
   assert.match(html, /https:\/\/xmd\.imfrank\.dev\/og\.png/);
@@ -99,11 +110,13 @@ test('/md post 200 MISS then HIT; renderer called once', async () => {
   assert.match(first.headers.get('content-type'), /text\/markdown/);
   assert.equal(first.headers.get('cache-control'), 'public, max-age=300');
   assert.equal(first.headers.get('x-xmd-engine'), 'x');
+  assertTextSecurity(first);
   assert.equal(await first.text(), '# post:1');
   const second = await call('/md?url=https://x.com/jack/status/1', { cache, render });
   assert.equal(second.status, 200);
   assert.equal(second.headers.get('x-xmd-cache'), 'HIT');
   assert.equal(second.headers.get('x-xmd-engine'), 'x');
+  assertTextSecurity(second);
   assert.equal(await second.text(), '# post:1');
   assert.equal(calls, 1);
 });
@@ -123,6 +136,7 @@ test('invalid mode, bad url, unknown path, POST', async () => {
   const render = async () => 'markdown';
   const invalid = await call('/md?mode=ancestor&url=1', { cache, render });
   assert.equal(invalid.status, 400);
+  assertTextSecurity(invalid);
   assert.equal(await invalid.text(), 'Invalid mode\n');
   const bad = await call('/md?url=bad', { cache, render });
   assert.equal(bad.status, 400);
@@ -243,7 +257,8 @@ test('browser errors: quota, busy, failed; SSRF never calls AI or browserRender'
     browserRender: async () => { throw new Error('429 Too Many Requests: browser time limit exceeded'); },
   });
   assert.equal(quota.status, 503);
-  assert.equal(quota.headers.get('Retry-After'), '3600');
+  const retryAfter = Number(quota.headers.get('Retry-After'));
+  assert.ok(retryAfter > 0 && retryAfter <= 86400);
   assert.equal(quota.headers.get('x-xmd-engine'), 'browser');
   assert.equal(quota.headers.get('x-xmd-browser-error'), 'quota');
   assert.equal(await quota.text(), 'Browser rendering daily quota exhausted (Cloudflare free plan); try again tomorrow\n');
@@ -305,4 +320,187 @@ test('browser errors: quota, busy, failed; SSRF never calls AI or browserRender'
   assert.equal(await blocked.text(), 'Blocked target\n');
   assert.equal(aiCalls, 0);
   assert.equal(browseCalls, 0);
+});
+
+test('rate-limited page request does not call resolveHost', async () => {
+  const cache = memoryCache();
+  const limiter = createMemoryLimiter({ limit: 1 });
+  const first = await call('/?url=https://example.com/a', {
+    ip: '203.0.113.9', cache, limiter,
+    renderPage: async () => '# a',
+    resolveHost: allowHost,
+  });
+  assert.equal(first.status, 200);
+  let dns = 0;
+  const limited = await call('/?url=https://example.com/b', {
+    ip: '203.0.113.9', cache, limiter,
+    renderPage: async () => '# b',
+    resolveHost: async () => { dns += 1; return ['93.184.216.34']; },
+  });
+  assert.equal(limited.status, 429);
+  assert.equal(dns, 0);
+  assertTextSecurity(limited);
+});
+
+test('page cache key drops tracking params and fragments', async () => {
+  const cache = memoryCache();
+  const limiter = createMemoryLimiter();
+  let n = 0;
+  const renderPageFn = async href => { n += 1; return `# page:${href}`; };
+  const first = await call('/?url=' + encodeURIComponent('https://example.com/p?utm_source=x&id=1#frag'), {
+    cache, limiter, renderPage: renderPageFn, resolveHost: allowHost,
+  });
+  assert.equal(first.status, 200);
+  assert.equal(first.headers.get('x-xmd-cache'), 'MISS');
+  const second = await call('/?url=' + encodeURIComponent('https://example.com/p?id=1&fbclid=abc'), {
+    cache, limiter, renderPage: renderPageFn, resolveHost: allowHost,
+  });
+  assert.equal(second.status, 200);
+  assert.equal(second.headers.get('x-xmd-cache'), 'HIT');
+  assert.equal(n, 1);
+  const third = await call('/?url=' + encodeURIComponent('https://example.com/p?id=2'), {
+    cache, limiter, renderPage: renderPageFn, resolveHost: allowHost,
+  });
+  assert.equal(third.headers.get('x-xmd-cache'), 'MISS');
+  assert.equal(n, 2);
+});
+
+test('browser budget denies without launching; fallback or 429', async () => {
+  const jsOnly = '<div id=root></div><noscript>You need to enable JavaScript to run this app.</noscript>';
+  const fetchImpl = async () => new Response(jsOnly, { status: 200, headers: { 'content-type': 'text/html' } });
+  let browseCalls = 0;
+  const browserRender = async () => { browseCalls += 1; return '<p>nope</p>'; };
+
+  const empty = await call('/?url=https://example.com/budget-empty', {
+    ip: '198.51.100.10',
+    cache: memoryCache(),
+    limiter: createMemoryLimiter(),
+    browserLimiter: createMemoryLimiter({ limit: 0 }),
+    env: { BROWSER: {} },
+    fetchImpl,
+    resolveHost: allowHost,
+    browserRender,
+  });
+  assert.equal(empty.status, 429);
+  assert.equal(empty.headers.get('retry-after'), '60');
+  assert.equal(empty.headers.get('x-xmd-browser-error'), 'budget');
+  assert.equal(await empty.text(), 'Browser rendering budget exceeded; try again later\n');
+  assert.equal(browseCalls, 0);
+  assertTextSecurity(empty);
+
+  const keep = await call('/?url=https://example.com/budget-keep', {
+    ip: '198.51.100.11',
+    cache: memoryCache(),
+    limiter: createMemoryLimiter(),
+    browserLimiter: createMemoryLimiter({ limit: 0 }),
+    env: {
+      BROWSER: {},
+      AI: { async toMarkdown() { return [{ format: 'markdown', data: '# Hello\n\n' + 'x'.repeat(300) }]; } },
+    },
+    fetchImpl,
+    resolveHost: allowHost,
+    browserRender,
+  });
+  assert.equal(keep.status, 200);
+  assert.equal(keep.headers.get('x-xmd-engine'), 'ai');
+  assert.equal(keep.headers.get('x-xmd-browser-error'), 'budget');
+  assert.equal(browseCalls, 0);
+});
+
+test('browser daily cap and quota flag skip the browser', async () => {
+  const jsOnly = '<div id=root></div><noscript>You need to enable JavaScript to run this app.</noscript>';
+  const fetchImpl = async () => new Response(jsOnly, { status: 200, headers: { 'content-type': 'text/html' } });
+  const date = new Date().toISOString().slice(0, 10);
+  const cache = memoryCache();
+  await cache.put(
+    new Request(`https://xmd-cache.internal/browser-budget/${date}`, { method: 'GET' }),
+    new Response('40', { headers: { 'Cache-Control': 'max-age=172800' } }),
+  );
+  let browseCalls = 0;
+  const capped = await call('/?url=https://example.com/daily-cap', {
+    cache,
+    limiter: createMemoryLimiter(),
+    env: { BROWSER: {} },
+    fetchImpl,
+    resolveHost: allowHost,
+    browserRender: async () => { browseCalls += 1; return '<p>nope</p>'; },
+  });
+  assert.equal(capped.status, 503);
+  assert.equal(capped.headers.get('x-xmd-browser-error'), 'quota');
+  const ra = Number(capped.headers.get('Retry-After'));
+  assert.ok(ra > 0 && ra <= 86400);
+  assert.equal(browseCalls, 0);
+
+  const cache2 = memoryCache();
+  await cache2.put(
+    new Request(`https://xmd-cache.internal/browser-quota/${date}`, { method: 'GET' }),
+    new Response('1', { headers: { 'Cache-Control': 'max-age=172800' } }),
+  );
+  const flagged = await call('/?url=https://example.com/quota-flag', {
+    cache: cache2,
+    limiter: createMemoryLimiter(),
+    env: { BROWSER: {} },
+    fetchImpl,
+    resolveHost: allowHost,
+    browserRender: async () => { browseCalls += 1; return '<p>nope</p>'; },
+  });
+  assert.equal(flagged.status, 503);
+  assert.equal(flagged.headers.get('x-xmd-browser-error'), 'quota');
+  assert.equal(browseCalls, 0);
+});
+
+test('BROWSER_LIMITER and BROWSER_GLOBAL_LIMITER bindings deny budget', async () => {
+  const jsOnly = '<div id=root></div><noscript>You need to enable JavaScript to run this app.</noscript>';
+  const fetchImpl = async () => new Response(jsOnly, { status: 200, headers: { 'content-type': 'text/html' } });
+  let browseCalls = 0;
+  const perIp = await call('/?url=https://example.com/bl', {
+    ip: '198.51.100.40',
+    cache: memoryCache(),
+    limiter: createMemoryLimiter(),
+    env: { BROWSER: {}, BROWSER_LIMITER: { async limit({ key }) { assert.equal(key, '198.51.100.40'); return { success: false }; } } },
+    fetchImpl,
+    resolveHost: allowHost,
+    browserRender: async () => { browseCalls += 1; return '<p>nope</p>'; },
+  });
+  assert.equal(perIp.status, 429);
+  assert.equal(perIp.headers.get('x-xmd-browser-error'), 'budget');
+  assert.equal(browseCalls, 0);
+
+  const global = await call('/?url=https://example.com/bg', {
+    ip: '198.51.100.41',
+    cache: memoryCache(),
+    limiter: createMemoryLimiter(),
+    env: { BROWSER: {}, BROWSER_GLOBAL_LIMITER: { async limit({ key }) { assert.equal(key, 'global'); return { success: false }; } } },
+    fetchImpl,
+    resolveHost: allowHost,
+    browserRender: async () => { browseCalls += 1; return '<p>nope</p>'; },
+  });
+  assert.equal(global.status, 429);
+  assert.equal(global.headers.get('x-xmd-browser-error'), 'budget');
+  assert.equal(browseCalls, 0);
+});
+
+test('in-flight browser jobs with the same cache key share one render', async () => {
+  const jsOnly = '<div id=root></div><noscript>You need to enable JavaScript to run this app.</noscript>';
+  const fetchImpl = async () => new Response(jsOnly, { status: 200, headers: { 'content-type': 'text/html' } });
+  const rich = `<html><head><title>Rendered</title></head><body><article><p>${'content '.repeat(80)}</p></article></body></html>`;
+  let browseCalls = 0;
+  let release;
+  const gate = new Promise(resolve => { release = resolve; });
+  const cache = memoryCache();
+  const limiter = createMemoryLimiter();
+  const env = { BROWSER: {} };
+  const browserRender = async () => {
+    browseCalls += 1;
+    await gate;
+    return rich;
+  };
+  const p1 = call('/?url=https://example.com/dedupe', { cache, limiter, env, fetchImpl, resolveHost: allowHost, browserRender });
+  const p2 = call('/?url=https://example.com/dedupe', { cache, limiter, env, fetchImpl, resolveHost: allowHost, browserRender });
+  for (let i = 0; i < 50 && browseCalls === 0; i++) await new Promise(r => setTimeout(r, 10));
+  release();
+  const [a, b] = await Promise.all([p1, p2]);
+  assert.equal(a.status, 200);
+  assert.equal(b.status, 200);
+  assert.equal(browseCalls, 1);
 });

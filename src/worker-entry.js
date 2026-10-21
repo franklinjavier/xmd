@@ -2,6 +2,10 @@ import puppeteer from '@cloudflare/puppeteer';
 import { handle } from './worker.js';
 import { USER_AGENT } from './version.js';
 import { validateTarget, isBlockedHostSync } from './page.js';
+import { NetworkError } from './fetch.js';
+
+const ABORT_TYPES = new Set(['image', 'media', 'font', 'websocket', 'eventsource', 'manifest']);
+const RENDERED_HTML_CAP = 2_000_000;
 
 export async function browserRender(env, url, { signal, validate } = {}) {
   let browser;
@@ -12,6 +16,10 @@ export async function browserRender(env, url, { signal, validate } = {}) {
     await page.setRequestInterception(true);
     page.on('request', request => {
       Promise.resolve().then(async () => {
+        if (ABORT_TYPES.has(request.resourceType())) {
+          await request.abort();
+          return;
+        }
         const reqUrl = request.url();
         let parsed;
         try { parsed = new URL(reqUrl); }
@@ -32,7 +40,11 @@ export async function browserRender(env, url, { signal, validate } = {}) {
       }).catch(() => request.abort().catch(() => {}));
     });
     if (signal?.aborted) throw signal.reason || new Error('aborted');
-    const rendered = page.goto(url, { waitUntil: 'networkidle0', timeout: 20_000 }).then(() => page.content());
+    const rendered = page.goto(url, { waitUntil: 'networkidle2', timeout: 10_000 }).then(async () => {
+      const html = await page.content();
+      if (html.length > RENDERED_HTML_CAP) throw new NetworkError('Rendered page too large');
+      return html;
+    });
     if (!signal) return await rendered;
     return await Promise.race([
       rendered,

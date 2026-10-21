@@ -2,6 +2,11 @@ import * as api from './fetch.js';
 import { NotFoundError } from './fetch.js';
 import { parseUrl, validId } from './parse-url.js';
 import { formatPost, formatReference, cleanHandle } from './format.js';
+import { neutralizeMarkdown, capMarkdown } from './page.js';
+
+function finalize(md) {
+  return capMarkdown(neutralizeMarkdown(String(md ?? '')));
+}
 export const modes = ['post', 'thread', 'ancestors', 'replies'];
 const handle = s => (typeof s.author?.screen_name === 'string' ? s.author.screen_name.trim() : '').toLowerCase();
 async function walk(id, fetcher) {
@@ -53,8 +58,8 @@ export async function render(input, mode = 'post', fetcher = api, { signal } = {
   }
   if (!modes.includes(mode)) throw new Error(`Invalid mode: ${mode}`);
   const { id } = parseUrl(input);
-  if (mode === 'replies') return renderReplies(id, fetcher);
-  if (mode === 'post') return formatPost(await fetcher.fetchStatus(id)) + '\n';
+  if (mode === 'replies') return finalize(await renderReplies(id, fetcher));
+  if (mode === 'post') return finalize(formatPost(await fetcher.fetchStatus(id)) + '\n');
   const { posts: chain, note } = await walk(id, fetcher);
   const root = chain[0];
   let posts = chain;
@@ -81,7 +86,7 @@ export async function render(input, mode = 'post', fetcher = api, { signal } = {
     const inputPost = chain.at(-1);
     if (handle(inputPost) !== handle(root)) intro.push(`_(input was by @${cleanHandle(inputPost.author?.screen_name) || 'unknown'})_`);
   } else intro.push(`## Reply chain (${posts.length} posts)`);
-  return intro.filter(Boolean).join('\n\n') + '\n\n' + posts.map((s,i) => formatPost(s, `${i+1}/${posts.length}`)).join('\n\n---\n\n') + '\n';
+  return finalize(intro.filter(Boolean).join('\n\n') + '\n\n' + posts.map((s,i) => formatPost(s, `${i+1}/${posts.length}`)).join('\n\n---\n\n') + '\n');
 }
 export const post = (input, fetcher) => render(input, 'post', fetcher);
 export const ancestors = (input, fetcher) => render(input, 'ancestors', fetcher);

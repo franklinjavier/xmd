@@ -9,7 +9,13 @@
   "observability": { "enabled": true },
   "ai": { "binding": "AI" },
   "browser": { "binding": "BROWSER" },
+  // Rate Limiting bindings are approximate and per Cloudflare location.
+  // period must be 10 or 60; each binding needs a unique namespace_id.
+  // Strict global caps need Durable Objects.
+  // https://developers.cloudflare.com/workers/runtime-apis/bindings/rate-limit/
   "ratelimits": [
-    { "name": "RATE_LIMITER", "namespace_id": "8792", "simple": { "limit": 30, "period": 60 } }
+    { "name": "RATE_LIMITER", "namespace_id": "8792", "simple": { "limit": 30, "period": 60 } },
+    { "name": "BROWSER_LIMITER", "namespace_id": "8793", "simple": { "limit": 3, "period": 60 } },
+    { "name": "BROWSER_GLOBAL_LIMITER", "namespace_id": "8794", "simple": { "limit": 6, "period": 60 } }
   ]
 }

@@ -6,7 +6,8 @@ import { ICONS, EXTENSION_SH } from './icons.js';
 import { LANDING_HTML } from './landing.js';
 import {
   fetchPage, htmlToMarkdown, extractTitle, looksJsOnly, visibleText, wrapPage,
-  validateTarget, normalizeTargetUrl, UnsupportedTypeError,
+  validateTarget, normalizeTargetUrl, canonicalizePageUrl, capMarkdown,
+  stripHiddenElements, UnsupportedTypeError,
 } from './page.js';
 
 const decodedIcons = new Map();
@@ -33,15 +34,32 @@ function iconResponse(path) {
 const DEADLINE_MS = 45_000;
 const CACHE_MAX_AGE = 300;
 const CACHE_CONTROL = `public, max-age=${CACHE_MAX_AGE}`;
+const BROWSER_CACHE_CONTROL = 'public, max-age=86400';
 const CACHE_VERSION = `v${VERSION.split('.').slice(0, 2).join('.')}`;
-const PAGE_CACHE_VERSION = 'v0.3.1';
+const PAGE_CACHE_VERSION = 'v0.3.2';
+const BROWSER_DAILY_CAP = 40;
+const RENDERED_HTML_CAP = 2_000_000;
+const TEXT_CSP = "default-src 'none'; frame-ancestors 'none'; sandbox";
+const TEXT_SECURITY = {
+  'X-Content-Type-Options': 'nosniff',
+  'Content-Security-Policy': TEXT_CSP,
+};
+// Web Analytics auto-injects a beacon from static.cloudflareinsights.com;
+// proxied auto-injection reports to /cdn-cgi/rum ('self') and cloudflareinsights.com.
+// https://developers.cloudflare.com/web-analytics/faq/
+// https://developers.cloudflare.com/fundamentals/reference/policies-compliances/content-security-policies/
+const LANDING_CSP = "default-src 'none'; img-src 'self'; style-src 'unsafe-inline'; script-src https://static.cloudflareinsights.com; connect-src 'self' https://cloudflareinsights.com";
 
 let defaultLimiter;
+let defaultBrowserLimiter;
+let browserInflight = 0;
+const browserJobs = new Map();
 
 export class BrowserQuotaError extends Error {
-  constructor(message = 'Browser rendering daily quota exhausted (Cloudflare free plan); try again tomorrow') {
+  constructor(message = 'Browser rendering daily quota exhausted (Cloudflare free plan); try again tomorrow', retryAfter = secondsUntilUtcMidnight()) {
     super(message);
     this.name = 'BrowserQuotaError';
+    this.retryAfter = retryAfter;
   }
 }
 
@@ -50,6 +68,27 @@ export class BrowserBusyError extends Error {
     super(message);
     this.name = 'BrowserBusyError';
   }
+}
+
+export class BrowserBudgetError extends Error {
+  constructor(message = 'Browser rendering budget exceeded; try again later') {
+    super(message);
+    this.name = 'BrowserBudgetError';
+  }
+}
+
+export function secondsUntilUtcMidnight(now = Date.now()) {
+  const d = new Date(now);
+  const next = Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate() + 1);
+  return Math.max(1, Math.ceil((next - now) / 1000));
+}
+
+function utcDate(now = Date.now()) {
+  return new Date(now).toISOString().slice(0, 10);
+}
+
+function budgetCacheRequest(kind, date) {
+  return new Request(`https://xmd-cache.internal/browser-${kind}/${date}`, { method: 'GET' });
 }
 
 export function createMemoryLimiter({ limit = 30, periodMs = 60_000, maxKeys = 10_000, now = Date.now } = {}) {
@@ -79,6 +118,7 @@ function reply(status, body, headers = {}) {
     headers: {
       'Content-Type': 'text/plain; charset=utf-8',
       'Access-Control-Allow-Origin': '*',
+      ...TEXT_SECURITY,
       ...headers,
     },
   });
@@ -87,7 +127,7 @@ function reply(status, body, headers = {}) {
 function errorResponse(error) {
   if (error.name === 'BrowserQuotaError' || error instanceof BrowserQuotaError) {
     return reply(503, `${error.message}\n`, {
-      'Retry-After': '3600',
+      'Retry-After': String(error.retryAfter ?? secondsUntilUtcMidnight()),
       'x-xmd-engine': 'browser',
       'x-xmd-browser-error': 'quota',
     });
@@ -97,6 +137,13 @@ function errorResponse(error) {
       'Retry-After': '60',
       'x-xmd-engine': 'browser',
       'x-xmd-browser-error': 'busy',
+    });
+  }
+  if (error.name === 'BrowserBudgetError' || error instanceof BrowserBudgetError) {
+    return reply(429, `${error.message}\n`, {
+      'Retry-After': '60',
+      'x-xmd-engine': 'browser',
+      'x-xmd-browser-error': 'budget',
     });
   }
   const status = error.name === 'TimeoutError' ? 504
@@ -114,7 +161,8 @@ function cacheKey(mode, id) {
 }
 
 async function pageCacheKey(href) {
-  const hash = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(href));
+  const canonical = canonicalizePageUrl(href);
+  const hash = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(canonical));
   const hex = [...new Uint8Array(hash)].map(b => b.toString(16).padStart(2, '0')).join('');
   return new Request(`https://xmd-cache.internal/${PAGE_CACHE_VERSION}/page/${hex}`, { method: 'GET' });
 }
@@ -141,22 +189,92 @@ async function enforceLimit(request, env, deps) {
   return null;
 }
 
+async function markBrowserQuota(deps, now = Date.now()) {
+  const cache = deps.cache ?? globalThis.caches?.default ?? null;
+  if (!cache) return;
+  const key = budgetCacheRequest('quota', utcDate(now));
+  await cache.put(key, new Response('1', { headers: { 'Cache-Control': 'max-age=172800' } }));
+}
+
+// Browser Rendering free plan: 10 browser-minutes/day, 3 concurrent, 1 new browser per 20 s;
+// 429 "Browser time limit exceeded for today" until next UTC day.
+// https://developers.cloudflare.com/browser-rendering/limits/
+// https://developers.cloudflare.com/browser-rendering/pricing/
+// Rate Limiting bindings are approximate and per Cloudflare location.
+// https://developers.cloudflare.com/workers/runtime-apis/bindings/rate-limit/
+// Cache API is per data center and not replicated; a strict daily cap needs a Durable Object.
+// https://developers.cloudflare.com/workers/runtime-apis/cache/
+export async function browserBudget(ip, env, deps = {}) {
+  const now = (deps.now ?? Date.now)();
+  const date = utcDate(now);
+  const cache = deps.cache ?? globalThis.caches?.default ?? null;
+  const keyIp = ip || 'unknown';
+
+  if (cache) {
+    const flagged = await cache.match(budgetCacheRequest('quota', date));
+    if (flagged) return { ok: false, reason: 'quota', retryAfter: secondsUntilUtcMidnight(now) };
+
+    const budgetKey = budgetCacheRequest('budget', date);
+    const hit = await cache.match(budgetKey);
+    let count = 0;
+    if (hit) count = Number.parseInt(await hit.text(), 10) || 0;
+    if (count >= BROWSER_DAILY_CAP) return { ok: false, reason: 'quota', retryAfter: secondsUntilUtcMidnight(now) };
+
+    const memoryLimiter = deps.browserLimiter ?? (defaultBrowserLimiter ??= createMemoryLimiter({ limit: 3, now: deps.now ?? Date.now }));
+    const memoryAllowed = await memoryLimiter.limit({ key: keyIp });
+    if (!memoryAllowed?.success) return { ok: false, reason: 'budget' };
+
+    if (typeof env?.BROWSER_LIMITER?.limit === 'function') {
+      const allowed = await env.BROWSER_LIMITER.limit({ key: keyIp });
+      if (!allowed?.success) return { ok: false, reason: 'budget' };
+    }
+    if (typeof env?.BROWSER_GLOBAL_LIMITER?.limit === 'function') {
+      const allowed = await env.BROWSER_GLOBAL_LIMITER.limit({ key: 'global' });
+      if (!allowed?.success) return { ok: false, reason: 'budget' };
+    }
+
+    // Non-atomic increment; per data center only.
+    await cache.put(budgetKey, new Response(String(count + 1), { headers: { 'Cache-Control': 'max-age=172800' } }));
+    return { ok: true };
+  }
+
+  const memoryLimiter = deps.browserLimiter ?? (defaultBrowserLimiter ??= createMemoryLimiter({ limit: 3, now: deps.now ?? Date.now }));
+  const memoryAllowed = await memoryLimiter.limit({ key: keyIp });
+  if (!memoryAllowed?.success) return { ok: false, reason: 'budget' };
+
+  if (typeof env?.BROWSER_LIMITER?.limit === 'function') {
+    const allowed = await env.BROWSER_LIMITER.limit({ key: keyIp });
+    if (!allowed?.success) return { ok: false, reason: 'budget' };
+  }
+  if (typeof env?.BROWSER_GLOBAL_LIMITER?.limit === 'function') {
+    const allowed = await env.BROWSER_GLOBAL_LIMITER.limit({ key: 'global' });
+    if (!allowed?.success) return { ok: false, reason: 'budget' };
+  }
+  return { ok: true };
+}
+
 async function tryAiMarkdown(env, html, finalUrl) {
   if (typeof env?.AI?.toMarkdown !== 'function') return null;
   try {
+    const cleaned = stripHiddenElements(html);
     const result = await env.AI.toMarkdown(
-      [{ name: 'page.html', blob: new Blob([html], { type: 'text/html' }) }],
+      [{ name: 'page.html', blob: new Blob([cleaned], { type: 'text/html' }) }],
       { conversionOptions: { html: { hostname: finalUrl } } },
     );
     const first = Array.isArray(result) ? result[0] : result;
-    if (first?.format === 'markdown' && String(first.data || '').trim()) return String(first.data);
+    if (first?.format === 'markdown' && String(first.data || '').trim()) return capMarkdown(String(first.data));
     return null;
   } catch {
     return null;
   }
 }
 
-export async function convertWebPage(input, env, deps, { signal, selfHost } = {}) {
+function budgetFallback(title, finalUrl, markdown, engine) {
+  if (!visibleText(markdown)) throw new BrowserBudgetError();
+  return { body: wrapPage(title, finalUrl, markdown), engine, browserError: 'budget' };
+}
+
+export async function convertWebPage(input, env, deps, { signal, selfHost, ip = 'unknown', cacheKey: jobKey } = {}) {
   const page = await fetchPage(input, {
     signal,
     fetchImpl: deps.fetchImpl,
@@ -172,11 +290,36 @@ export async function convertWebPage(input, env, deps, { signal, selfHost } = {}
   let title = page.title;
   const canBrowse = typeof deps.browserRender === 'function' && env?.BROWSER;
   if (canBrowse && looksJsOnly(page.body, markdown)) {
+    const key = jobKey || page.finalUrl;
     try {
-      const renderedHtml = String(await deps.browserRender(page.finalUrl, {
-        signal,
-        validate: url => validateTarget(url, { selfHost, resolveHost: deps.resolveHost }),
-      }) ?? '');
+      let renderedHtml;
+      const shared = browserJobs.get(key);
+      if (shared) {
+        renderedHtml = String(await shared ?? '');
+      } else {
+        const budget = await browserBudget(ip, env, deps);
+        const raced = browserJobs.get(key);
+        if (raced) {
+          renderedHtml = String(await raced ?? '');
+        } else if (!budget.ok) {
+          if (budget.reason === 'quota') throw new BrowserQuotaError(undefined, budget.retryAfter);
+          return budgetFallback(title, page.finalUrl, markdown, engine);
+        } else if (browserInflight >= 1) {
+          return budgetFallback(title, page.finalUrl, markdown, engine);
+        } else {
+          browserInflight += 1;
+          const job = Promise.resolve().then(() => deps.browserRender(page.finalUrl, {
+            signal,
+            validate: url => validateTarget(url, { selfHost, resolveHost: deps.resolveHost }),
+          })).finally(() => {
+            browserInflight -= 1;
+            browserJobs.delete(key);
+          });
+          browserJobs.set(key, job);
+          renderedHtml = String(await job ?? '');
+        }
+      }
+      if (renderedHtml.length > RENDERED_HTML_CAP) throw new NetworkError('Rendered page too large');
       let renderedMd = await tryAiMarkdown(env, renderedHtml, page.finalUrl);
       if (!renderedMd) renderedMd = htmlToMarkdown(renderedHtml, page.finalUrl);
       if (visibleText(renderedMd).length > visibleText(markdown).length) {
@@ -185,9 +328,16 @@ export async function convertWebPage(input, env, deps, { signal, selfHost } = {}
         engine = 'browser';
       }
     } catch (error) {
+      if (error instanceof BrowserBudgetError || error.name === 'BrowserBudgetError') {
+        return budgetFallback(title, page.finalUrl, markdown, engine);
+      }
+      if (error instanceof BrowserQuotaError || error.name === 'BrowserQuotaError') throw error;
       console.error('xmd browser error', error?.name, String(error?.message || error).slice(0, 500));
       const msg = String(error?.message || error);
-      if (/daily|time limit|quota|browser time/i.test(msg)) throw new BrowserQuotaError();
+      if (/daily|time limit|quota|browser time/i.test(msg)) {
+        await markBrowserQuota(deps);
+        throw new BrowserQuotaError();
+      }
       if (/429|rate limit|too many|concurrent|limit/i.test(msg)) throw new BrowserBusyError();
       if (!visibleText(markdown)) {
         const failed = new NetworkError('Browser rendering failed');
@@ -200,6 +350,11 @@ export async function convertWebPage(input, env, deps, { signal, selfHost } = {}
   return { body: wrapPage(title, page.finalUrl, markdown), engine };
 }
 
+function applyTextSecurity(headers) {
+  headers.set('X-Content-Type-Options', 'nosniff');
+  headers.set('Content-Security-Policy', TEXT_CSP);
+}
+
 async function serveRendered(request, env, ctx, deps, cache, key, work, defaultEngine) {
   const waitUntil = typeof ctx?.waitUntil === 'function' ? ctx.waitUntil.bind(ctx) : () => {};
   const deadlineMs = deps.deadlineMs ?? DEADLINE_MS;
@@ -208,6 +363,8 @@ async function serveRendered(request, env, ctx, deps, cache, key, work, defaultE
     const headers = new Headers(cached.headers);
     headers.set('Access-Control-Allow-Origin', '*');
     headers.set('x-xmd-cache', 'HIT');
+    headers.set('Cache-Control', CACHE_CONTROL);
+    applyTextSecurity(headers);
     return new Response(cached.body, { status: cached.status, headers });
   }
   const limited = await enforceLimit(request, env, deps);
@@ -230,6 +387,7 @@ async function serveRendered(request, env, ctx, deps, cache, key, work, defaultE
       'Content-Type': 'text/markdown; charset=utf-8',
       'Cache-Control': CACHE_CONTROL,
       'Access-Control-Allow-Origin': '*',
+      ...TEXT_SECURITY,
       'x-xmd-cache': 'MISS',
       'x-xmd-engine': engine,
     };
@@ -239,7 +397,7 @@ async function serveRendered(request, env, ctx, deps, cache, key, work, defaultE
     const response = new Response(body, { status: 200, headers });
     if (cache) {
       const stored = response.clone();
-      stored.headers.set('Cache-Control', CACHE_CONTROL);
+      stored.headers.set('Cache-Control', engine === 'browser' ? BROWSER_CACHE_CONTROL : CACHE_CONTROL);
       waitUntil(cache.put(key, stored));
     }
     return response;
@@ -253,6 +411,7 @@ async function serveRendered(request, env, ctx, deps, cache, key, work, defaultE
 export async function handle(request, env = {}, ctx = {}, deps = {}) {
   const renderer = deps.render ?? defaultRender;
   const cache = deps.cache ?? globalThis.caches?.default ?? null;
+  const ip = request.headers.get('cf-connecting-ip') || 'unknown';
 
   if (request.method !== 'GET') return reply(405, 'Method not allowed\n', { Allow: 'GET' });
 
@@ -264,7 +423,7 @@ export async function handle(request, env = {}, ctx = {}, deps = {}) {
       status: 200,
       headers: {
         'Content-Type': 'text/html; charset=utf-8',
-        'Content-Security-Policy': "default-src 'none'; img-src 'self'; style-src 'unsafe-inline'",
+        'Content-Security-Policy': LANDING_CSP,
         'X-Content-Type-Options': 'nosniff',
         'Referrer-Policy': 'strict-origin-when-cross-origin',
         'Cache-Control': 'public, max-age=300',
@@ -302,24 +461,26 @@ export async function handle(request, env = {}, ctx = {}, deps = {}) {
     let target;
     try { target = normalizeTargetUrl(raw); }
     catch (error) { return reply(400, `${error.message}\n`); }
-    try {
-      await validateTarget(target.href, { selfHost: url.hostname, resolveHost: deps.resolveHost });
-    } catch (error) {
-      return errorResponse(error);
-    }
     const key = await pageCacheKey(target.href);
+    const selfHost = url.hostname;
+    const validateThen = work => async signal => {
+      await validateTarget(target.href, { selfHost, resolveHost: deps.resolveHost });
+      return work(signal);
+    };
     if (typeof deps.renderPage === 'function') {
-      return serveRendered(request, env, ctx, deps, cache, key, signal => deps.renderPage(target.href, {
+      return serveRendered(request, env, ctx, deps, cache, key, validateThen(signal => deps.renderPage(target.href, {
         signal,
         resolveHost: deps.resolveHost,
-        selfHost: url.hostname,
+        selfHost,
         fetchImpl: deps.fetchImpl,
-      }), 'fallback');
+      })), 'fallback');
     }
-    return serveRendered(request, env, ctx, deps, cache, key, signal => convertWebPage(target.href, env, deps, {
+    return serveRendered(request, env, ctx, deps, cache, key, validateThen(signal => convertWebPage(target.href, env, deps, {
       signal,
-      selfHost: url.hostname,
-    }));
+      selfHost,
+      ip,
+      cacheKey: key.url,
+    })));
   }
 
   if (path !== '/md' && !/^\/md\/[^/]+$/.test(path)) return reply(404, 'Not found\n');

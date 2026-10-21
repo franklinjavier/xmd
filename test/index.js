@@ -6,3 +6,4 @@ import './worker.test.js';
 import './page.test.js';
 import './extension.test.js';
 import './normalize-url.test.js';
+import './sanitize-terminal.test.js';

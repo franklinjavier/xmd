@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { validateTarget, htmlToMarkdown, renderPage, looksJsOnly, isBlockedHostSync, BlockedTargetError, UnsupportedTypeError, USAGE } from '../src/page.js';
+import { validateTarget, htmlToMarkdown, renderPage, looksJsOnly, isBlockedHostSync, BlockedTargetError, UnsupportedTypeError, USAGE, neutralizeMarkdown, stripHiddenElements, canonicalizePageUrl } from '../src/page.js';
 import { NetworkError } from '../src/fetch.js';
 import { handle, createMemoryLimiter } from '../src/worker.js';
 
@@ -24,10 +24,13 @@ function memoryCache() {
 async function call(path, deps = {}) {
   const pending = [];
   const ctx = { waitUntil(p) { pending.push(p); } };
-  const { env = {}, method = 'GET', ip, ...rest } = deps;
+  const { env = {}, method = 'GET', ip, browserLimiter, ...rest } = deps;
   const headers = {};
   if (ip) headers['cf-connecting-ip'] = ip;
-  const response = await handle(new Request(`https://xmd.test${path}`, { method, headers }), env, ctx, rest);
+  const response = await handle(new Request(`https://xmd.test${path}`, { method, headers }), env, ctx, {
+    browserLimiter: browserLimiter ?? createMemoryLimiter({ limit: 1000 }),
+    ...rest,
+  });
   await Promise.all(pending);
   return response;
 }
@@ -42,6 +45,13 @@ test('validateTarget blocks private, special, and malformed targets', async () =
     'http://[::1]',
     'http://[::ffff:127.0.0.1]',
     'http://[::ffff:7f00:1]',
+    'http://[::127.0.0.1]/',
+    'http://[2002:7f00:1::]/',
+    'http://[64:ff9b:1::7f00:1]/',
+    'http://[64:ff9b::7f00:1]/',
+    'http://[2001:db8::1]/',
+    'http://[2001::1]/',
+    'http://[fec0::1]/',
     'http://169.254.169.254/latest/meta-data',
     'http://10.0.0.1',
     'http://100.64.0.1',
@@ -66,6 +76,7 @@ test('validateTarget blocks private, special, and malformed targets', async () =
   await assert.rejects(() => validateTarget('https://xmd.imfrank.dev/', { resolveHost: allow }), BlockedTargetError);
   await validateTarget('https://example.com/', { resolveHost: allow });
   await validateTarget('http://example.org', { resolveHost: allow });
+  await validateTarget('http://[2606:4700:4700::1111]/', { resolveHost: async () => assert.fail('literal global IPv6 must skip DNS') });
 });
 
 test('validateTarget DNS: blocked address, empty, allowed', async () => {
@@ -320,4 +331,60 @@ test('Worker JS-only page uses browserRender; omitted browserRender keeps ai', a
   assert.equal(aiOnly.status, 200);
   assert.equal(aiOnly.headers.get('x-xmd-engine'), 'ai');
   assert.equal(aiCalls, 1);
+});
+
+test('neutralizeMarkdown escapes tags and unsafe link schemes; fences keep tags', () => {
+  assert.match(neutralizeMarkdown('hello <img src=x onerror=alert(1)>'), /&lt;img src=x onerror=alert\(1\)>/);
+  assert.doesNotMatch(neutralizeMarkdown('hello <img src=x onerror=alert(1)>'), /<img/);
+  const fenced = '```\n<div>\n```';
+  assert.equal(neutralizeMarkdown(fenced), fenced);
+  const tildes = '~~~\n<div>\n~~~';
+  assert.equal(neutralizeMarkdown(tildes), tildes);
+  assert.equal(neutralizeMarkdown('see `[x](javascript:alert(1))` in code'), 'see `[x](javascript:alert(1))` in code');
+  assert.equal(neutralizeMarkdown('[x](javascript:alert(1))'), '[x](#)');
+  assert.equal(neutralizeMarkdown('[x](data:text/html,hi)'), '[x](#)');
+  assert.equal(neutralizeMarkdown('[x](vbscript:msg)'), '[x](#)');
+  assert.equal(neutralizeMarkdown('[ok](https://example.com/a)'), '[ok](https://example.com/a)');
+  assert.equal(neutralizeMarkdown('[mail](mailto:a@b.com)'), '[mail](mailto:a@b.com)');
+  assert.equal(neutralizeMarkdown('<sub>❤️ 1</sub>'), '<sub>❤️ 1</sub>');
+  assert.equal(neutralizeMarkdown('<sub onclick="x">'), '&lt;sub onclick="x">');
+});
+
+test('stripHiddenElements drops hidden, aria-hidden, and display:none', () => {
+  const html = '<p>visible</p><p style="display:none">secret</p><div aria-hidden="true">ghost</div><span hidden>nope</span><img hidden src=x><p style="visibility:hidden">invis</p>';
+  const out = stripHiddenElements(html);
+  assert.match(out, /visible/);
+  assert.doesNotMatch(out, /secret|ghost|nope|invis/);
+  const nested = '<div hidden><div>inner</div><div>more</div></div>after';
+  assert.equal(stripHiddenElements(nested), 'after');
+});
+
+test('htmlToMarkdown drops hidden text and wrapPage neutralizes raw tags', async () => {
+  const html = `<html><body><p>&lt;img src=x onerror=alert(1)&gt;</p><p style="display:none">IGNORE PREVIOUS</p><div aria-hidden="true">hidden aria</div></body></html>`;
+  const md = htmlToMarkdown(html, 'https://example.com/');
+  assert.doesNotMatch(md, /IGNORE PREVIOUS|hidden aria/);
+  const page = await renderPage('https://example.com/xss', {
+    resolveHost: allow,
+    fetchImpl: async () => new Response(html, { status: 200, headers: { 'content-type': 'text/html' } }),
+  });
+  assert.match(page, /&lt;img src=x onerror=alert\(1\)>/);
+  assert.doesNotMatch(page, /<img/);
+  assert.doesNotMatch(page, /IGNORE PREVIOUS/);
+});
+
+test('Worker blocked IPv6 transition addresses are 400; global unicast passes literal check', async () => {
+  const cache = memoryCache();
+  const limiter = createMemoryLimiter();
+  for (const href of ['http://[::127.0.0.1]/', 'http://[2002:7f00:1::]/', 'http://[64:ff9b:1::7f00:1]/', 'http://[64:ff9b::7f00:1]/']) {
+    let forbidden = 0;
+    const blocked = await call('/?url=' + encodeURIComponent(href), {
+      cache, limiter,
+      renderPage: async () => { forbidden += 1; return 'nope'; },
+    });
+    assert.equal(blocked.status, 400, href);
+    assert.equal(await blocked.text(), 'Blocked target\n', href);
+    assert.equal(forbidden, 0, href);
+  }
+  assert.equal(isBlockedHostSync('http://[2606:4700:4700::1111]/'), false);
+  assert.equal(canonicalizePageUrl('https://example.com/a?utm_campaign=x&keep=1#hash'), 'https://example.com/a?keep=1');
 });

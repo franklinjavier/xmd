@@ -1,6 +1,6 @@
 # xmd
 
-Turn X (Twitter) posts into clean Markdown, via the public FxTwitter API. No X login, no API keys. The CLI has one runtime dependency, `@cloudflare/puppeteer` (used by the Worker's browser engine), so a global install pulls about 33 MB on disk (measured with `bun add -g`, bun 1.4.2).
+Turn X (Twitter) posts into clean Markdown, via the public FxTwitter API. No X login, no API keys. The CLI has one runtime dependency, `@cloudflare/puppeteer` (used by the Worker's browser engine), so a global install pulls about 34 MB on disk (measured with `bun add -g`, bun 1.4.2).
 
 ## Hosted endpoint
 
@@ -50,9 +50,9 @@ curl -G 'https://xmd.imfrank.dev/' --data-urlencode 'url=https://example.com'
 | 404 | Unknown path or unavailable post |
 | 405 | Method not allowed (only GET) |
 | 415 | Unsupported content type (any-link) |
-| 429 | Rate limit exceeded |
+| 429 | Rate limit exceeded, or browser rendering budget exceeded (`x-xmd-browser-error: budget`) |
 | 502 | Upstream / network error |
-| 503 | Browser rendering daily quota exhausted (`Retry-After: 3600`) or busy (`Retry-After: 60`) |
+| 503 | Browser rendering daily quota exhausted (`Retry-After` until next UTC midnight, `x-xmd-browser-error: quota`) or busy (`Retry-After: 60`) |
 | 504 | Render exceeded the 45 s deadline |
 
 ### Caching
@@ -69,7 +69,7 @@ Two layers: a per-isolate in-memory fixed window (30 uncached requests / 60 s pe
 
 `GET /?url=<any url>` fetches a public http(s) page and returns Markdown (`text/markdown; charset=utf-8`). If the URL is an X/Twitter post, it is handled exactly like `/md?url=...&mode=` (optional `mode`, default `post`). `GET /` with no `url` returns a short usage list.
 
-On the hosted Worker, HTML is converted by Cloudflare Workers AI Markdown Conversion (`env.AI.toMarkdown`, free for HTML). JS-only or empty pages are rendered with Cloudflare Browser Rendering (free plan: 10 browser-minutes per day, 3 concurrent). Daily quota exhausted: `503` with `Retry-After: 3600` and `x-xmd-browser-error: quota`. Too many new or concurrent browsers: `503` with `Retry-After: 60` and `x-xmd-browser-error: busy`. The built-in HTML-to-Markdown converter is the last-resort fallback, and is what the CLI and local Node server use.
+On the hosted Worker, HTML is converted by Cloudflare Workers AI Markdown Conversion (`env.AI.toMarkdown`, free for HTML). JS-only or empty pages are rendered with Cloudflare Browser Rendering (free plan: 10 browser-minutes per day, 3 concurrent), behind a separate small budget (3/min per IP, a per-location global cap, and a best-effort ~40/day cap). Daily quota exhausted: `503` with `Retry-After` until next UTC midnight and `x-xmd-browser-error: quota`. Per-IP/global budget exceeded: fallback Markdown with `x-xmd-browser-error: budget`, or `429` if there is no visible text. Too many new or concurrent browsers: `503` with `Retry-After: 60` and `x-xmd-browser-error: busy`. The built-in HTML-to-Markdown converter is the last-resort fallback, and is what the CLI and local server use.
 
 Every `/?url=` and `/md` response includes `x-xmd-engine`:
 
@@ -87,7 +87,7 @@ curl -G 'https://xmd.imfrank.dev/' --data-urlencode 'url=https://example.com'
 
 ## CLI
 
-bun is the package manager. The `xmd`/`x-md` commands run on Bun (the bin uses a `bun` shebang), so only bun is needed for the CLI. Node >= 26 is needed only for the local server (`node src/server.js`) and the test suite.
+bun is the package manager. The CLI and local server run on Bun only; Node ≥ 26 is needed only to run the test suite (`bun run test` calls `node --test`).
 
 ```sh
 bun add -g github:franklinjavier/xmd
@@ -100,7 +100,7 @@ xmd --mode replies https://x.com/jack/status/2110642522355638381
 xmd https://example.com
 ```
 
-Usage: `xmd <x-post-url|id|any-url> [--mode post|thread|ancestors|replies]`. `x-md` is kept as an alias.
+Usage: `xmd <x-post-url|id|any-url> [--mode post|thread|ancestors|replies] [--raw]`. `x-md` is kept as an alias. `--raw` keeps terminal escape sequences in the output.
 
 Exit codes: 2 usage/URL/blocked target, 3 unavailable post, 4 upstream/network, 5 unsupported content type.
 
@@ -130,7 +130,7 @@ The link points at `xmd.imfrank.dev`. To self-host, change `XMD_BASE` at the top
 ## Local server
 
 ```sh
-XMD_HOST=127.0.0.1 XMD_PORT=8792 node src/server.js
+XMD_HOST=127.0.0.1 XMD_PORT=8792 bun src/server.js
 ```
 
 The host must be an explicit IP (wildcards refused) so you bind it to a private interface such as a VPN address on purpose.
@@ -142,7 +142,7 @@ bun install
 bunx wrangler deploy
 ```
 
-The Worker needs the `ai` and `browser` bindings and `nodejs_compat`, all declared in `wrangler.jsonc`. `@cloudflare/puppeteer` is the only runtime dependency (used by the Worker browser engine; a global install pulls it). It serves `/favicon.ico`, `/favicon.png`, `/apple-touch-icon.png`, `/icon-512.png`, `/og.png`, and `/extension.sh`. The free plan is enough. `wrangler.jsonc` also declares a Rate Limiting binding named `RATE_LIMITER` (`namespace_id` must be unique in your account). The in-isolate memory limiter always applies; without the binding only that layer is used.
+The Worker needs the `ai` and `browser` bindings and `nodejs_compat`, all declared in `wrangler.jsonc`. `@cloudflare/puppeteer` is the only runtime dependency (used by the Worker browser engine; a global install pulls it). It serves `/favicon.ico`, `/favicon.png`, `/apple-touch-icon.png`, `/icon-512.png`, `/og.png`, and `/extension.sh`. The free plan is enough. `wrangler.jsonc` also declares Rate Limiting bindings named `RATE_LIMITER`, `BROWSER_LIMITER`, and `BROWSER_GLOBAL_LIMITER` (each `namespace_id` must be unique in your account). The in-isolate memory limiter always applies; without a binding only that layer is used.
 
 ## Config
 
@@ -153,6 +153,12 @@ The Worker needs the `ai` and `browser` bindings and `nodejs_compat`, all declar
 Public API availability and visibility determine completeness; deleted or protected posts cannot be recovered. Conversation cursors are not paginated. Quotes render one level, media render as links, and missing fields are tolerated.
 
 Credits: [FxTwitter](https://github.com/FixTweet/FxTwitter).
+
+## Security notes
+
+- Output is untrusted content: raw HTML tags are neutralized and hidden text is dropped, but treat the Markdown as untrusted.
+- Browser rendering has a separate small budget (3/min per IP, a per-location global cap, ~40/day best-effort) and falls back or returns 429/503.
+- The CLI strips terminal escapes unless `--raw`.
 
 ## Testing
 
