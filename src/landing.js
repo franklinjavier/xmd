@@ -180,6 +180,7 @@ a:focus-visible { outline: 2px solid color-mix(in oklch, var(--ring) 50%, transp
 .field button:focus-visible { outline: 2px solid color-mix(in oklch, var(--ring) 50%, transparent); outline-offset: 2px; }
 .modes { margin: 0; padding: 0; border: 0; min-width: 0; display: flex; flex-direction: column; gap: 8px; }
 .try h2 { margin: 0; }
+.modes[hidden] { display: none; }
 .modes legend { padding: 0; margin: 4px 0 8px; }
 .segmented {
   display: grid;
