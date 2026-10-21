@@ -1,10 +1,10 @@
 # xmd
 
-Turn X (Twitter) posts into clean Markdown, via the public FxTwitter API. No X login, no API keys. The CLI has one runtime dependency, `@cloudflare/puppeteer` (used by the Worker's browser engine), so a global install pulls ~32 MB.
+Turn X (Twitter) posts into clean Markdown, via the public FxTwitter API. No X login, no API keys. The CLI has one runtime dependency, `@cloudflare/puppeteer` (used by the Worker's browser engine), so a global install pulls about 33 MB on disk (measured with `bun add -g`, bun 1.4.2).
 
 ## Hosted endpoint
 
-Live at [https://xmd.imfrank.dev](https://xmd.imfrank.dev). Usage: `https://xmd.imfrank.dev/?url=<link>` (scheme optional, e.g. `?url=example.com`); health check: `https://xmd.imfrank.dev/health`.
+Live at [https://xmd.imfrank.dev](https://xmd.imfrank.dev). `GET /` is a landing page. Usage: `https://xmd.imfrank.dev/?url=<link>` (scheme optional, e.g. `?url=example.com`); health check: `https://xmd.imfrank.dev/health`. Share image: `/og.png`. Chrome extension installer: `/extension.sh`.
 
 ## HTTP API
 
@@ -87,7 +87,7 @@ curl -G 'https://xmd.imfrank.dev/' --data-urlencode 'url=https://example.com'
 
 ## CLI
 
-bun is the package manager. The `xmd`/`x-md` commands run on Node >= 26 (the bin uses a `node` shebang), so Node 26+ must be on PATH.
+bun is the package manager. The `xmd`/`x-md` commands run on Bun (the bin uses a `bun` shebang), so only bun is needed for the CLI. Node >= 26 is needed only for the local server (`node src/server.js`) and the test suite.
 
 ```sh
 bun add -g github:franklinjavier/xmd
@@ -115,7 +115,15 @@ Permissions:
 
 No `scripting` or host permissions: the popup runs after the click and already has the tab URL. Not on the Chrome Web Store.
 
-Install: open `chrome://extensions` → enable Developer mode → Load unpacked → select the `extension/` folder.
+Install:
+
+```sh
+curl -fsSL https://xmd.imfrank.dev/extension.sh | sh
+```
+
+That downloads only the extension to `~/xmd-extension` (no git or bun needed). Then open `chrome://extensions` → enable Developer mode → Load unpacked → `~/xmd-extension`. To update, run the same command and click reload on the extension card.
+
+Folder alternative: clone the repo and load unpacked the `extension/` folder.
 
 The link points at `xmd.imfrank.dev`. To self-host, change `XMD_BASE` at the top of `extension/popup.js`.
 
@@ -134,7 +142,7 @@ bun install
 bunx wrangler deploy
 ```
 
-The Worker needs the `ai` and `browser` bindings and `nodejs_compat`, all declared in `wrangler.jsonc`. `@cloudflare/puppeteer` is the only runtime dependency (used by the Worker browser engine; a global install pulls it). It serves `/favicon.ico`, `/favicon.png`, `/apple-touch-icon.png`, and `/icon-512.png`. The free plan is enough. `wrangler.jsonc` also declares a Rate Limiting binding named `RATE_LIMITER` (`namespace_id` must be unique in your account). The in-isolate memory limiter always applies; without the binding only that layer is used.
+The Worker needs the `ai` and `browser` bindings and `nodejs_compat`, all declared in `wrangler.jsonc`. `@cloudflare/puppeteer` is the only runtime dependency (used by the Worker browser engine; a global install pulls it). It serves `/favicon.ico`, `/favicon.png`, `/apple-touch-icon.png`, `/icon-512.png`, `/og.png`, and `/extension.sh`. The free plan is enough. `wrangler.jsonc` also declares a Rate Limiting binding named `RATE_LIMITER` (`namespace_id` must be unique in your account). The in-isolate memory limiter always applies; without the binding only that layer is used.
 
 ## Config
 

@@ -38,6 +38,38 @@ test('GET /health returns 200 ok and is not cached', async () => {
   assert.equal(response.headers.get('x-xmd-cache'), null);
 });
 
+test('GET / landing HTML, /og.png, /extension.sh; /?url= stays markdown', async () => {
+  const landing = await call('/', { render: async () => assert.fail('landing must not render') });
+  assert.equal(landing.status, 200);
+  assert.match(landing.headers.get('content-type'), /text\/html/);
+  assert.equal(landing.headers.get('content-security-policy'), "default-src 'none'; img-src 'self'; style-src 'unsafe-inline'");
+  const html = await landing.text();
+  assert.match(html, /og:image/);
+  assert.match(html, /https:\/\/xmd\.imfrank\.dev\/og\.png/);
+
+  const og = await call('/og.png', { render: async () => assert.fail('og must not render') });
+  assert.equal(og.status, 200);
+  assert.match(og.headers.get('content-type'), /image\/png/);
+  const ogBytes = new Uint8Array(await og.arrayBuffer());
+  assert.deepEqual([...ogBytes.subarray(0, 8)], [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+
+  const sh = await call('/extension.sh', { render: async () => assert.fail('extension.sh must not render') });
+  assert.equal(sh.status, 200);
+  assert.match(sh.headers.get('content-type'), /text\/x-shellscript/);
+  assert.ok((await sh.text()).startsWith('#!/bin/sh'));
+
+  const allow = async () => ['93.184.216.34'];
+  const page = await call('/?url=https://example.com', {
+    cache: memoryCache(),
+    limiter: createMemoryLimiter(),
+    renderPage: async href => `# page:${href}`,
+    resolveHost: allow,
+  });
+  assert.equal(page.status, 200);
+  assert.match(page.headers.get('content-type'), /text\/markdown/);
+  assert.equal(await page.text(), '# page:https://example.com/');
+});
+
 test('GET /favicon.ico and /apple-touch-icon.png skip limiter and AI', async () => {
   const env = {
     RATE_LIMITER: { async limit() { return { success: false }; } },

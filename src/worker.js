@@ -2,10 +2,11 @@ import { parseUrl } from './parse-url.js';
 import { render as defaultRender, modes } from './modes.js';
 import { NotFoundError, NetworkError } from './fetch.js';
 import { VERSION } from './version.js';
-import { ICONS } from './icons.js';
+import { ICONS, EXTENSION_SH } from './icons.js';
+import { LANDING_HTML } from './landing.js';
 import {
   fetchPage, htmlToMarkdown, extractTitle, looksJsOnly, visibleText, wrapPage,
-  validateTarget, normalizeTargetUrl, USAGE, UnsupportedTypeError,
+  validateTarget, normalizeTargetUrl, UnsupportedTypeError,
 } from './page.js';
 
 const decodedIcons = new Map();
@@ -258,6 +259,28 @@ export async function handle(request, env = {}, ctx = {}, deps = {}) {
   const url = new URL(request.url);
   const path = url.pathname.replace(/[\x00-\x1f\x7f]/g, '');
   if (path === '/health') return reply(200, 'ok');
+  if (path === '/' && url.searchParams.get('url') === null) {
+    return new Response(LANDING_HTML, {
+      status: 200,
+      headers: {
+        'Content-Type': 'text/html; charset=utf-8',
+        'Content-Security-Policy': "default-src 'none'; img-src 'self'; style-src 'unsafe-inline'",
+        'X-Content-Type-Options': 'nosniff',
+        'Referrer-Policy': 'strict-origin-when-cross-origin',
+        'Cache-Control': 'public, max-age=300',
+      },
+    });
+  }
+  if (path === '/extension.sh') {
+    return new Response(EXTENSION_SH, {
+      status: 200,
+      headers: {
+        'Content-Type': 'text/x-shellscript; charset=utf-8',
+        'X-Content-Type-Options': 'nosniff',
+        'Cache-Control': 'public, max-age=300',
+      },
+    });
+  }
   const iconPath = path === '/favicon-32.png' ? '/favicon.png' : path;
   if (ICONS[iconPath]) return iconResponse(iconPath);
 
@@ -267,7 +290,6 @@ export async function handle(request, env = {}, ctx = {}, deps = {}) {
 
   if (path === '/') {
     const raw = url.searchParams.get('url');
-    if (raw === null) return reply(200, USAGE);
     if (!String(raw).trim()) return reply(400, 'Expected a URL\n');
     try {
       const { id } = parseUrl(raw);

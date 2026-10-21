@@ -178,7 +178,8 @@ test('Worker GET / usage, X post, page cache, blocked loopback', async () => {
   const limiter = createMemoryLimiter();
   const usage = await call('/', { cache, limiter, render: async () => assert.fail('usage must not render') });
   assert.equal(usage.status, 200);
-  assert.match(await usage.text(), /\/health/);
+  assert.match(usage.headers.get('content-type'), /text\/html/);
+  assert.match(await usage.text(), /og:image/);
   assert.match(USAGE, /GET \/\?url=/);
 
   const empty = await call('/?url=', { cache, limiter });
