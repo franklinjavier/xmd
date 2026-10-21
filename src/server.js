@@ -5,7 +5,7 @@ import { pathToFileURL } from 'node:url';
 import { parseUrl } from './parse-url.js';
 import { render, modes } from './modes.js';
 import { NotFoundError, NetworkError } from './fetch.js';
-import { renderPage as defaultRenderPage, USAGE, UnsupportedTypeError } from './page.js';
+import { renderPage as defaultRenderPage, normalizeTargetUrl, USAGE, UnsupportedTypeError } from './page.js';
 export function normalizeHost(value) {
   const host = value.trim().replace(/^\[(.*)\]$/, '$1');
   if (!isIP(host)) throw new Error('Host must be an explicit IP address');
@@ -68,7 +68,7 @@ export function createServer(renderer = render, { deadlineMs = 45_000, renderPag
           }
           return send(200, entry.body, 'text/markdown; charset=utf-8');
         }
-        const href = new URL(String(raw).trim()).href;
+        const href = normalizeTargetUrl(raw).href;
         const key = `page:${href}`;
         let entry = cache.get(key);
         if (!entry || entry.expires <= Date.now()) {

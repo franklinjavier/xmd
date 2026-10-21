@@ -4,7 +4,7 @@ import { NotFoundError, NetworkError } from './fetch.js';
 import { VERSION } from './version.js';
 import {
   fetchPage, htmlToMarkdown, extractTitle, looksJsOnly, visibleText, wrapPage,
-  validateTarget, USAGE, UnsupportedTypeError,
+  validateTarget, normalizeTargetUrl, USAGE, UnsupportedTypeError,
 } from './page.js';
 
 const DEADLINE_MS = 45_000;
@@ -254,7 +254,7 @@ export async function handle(request, env = {}, ctx = {}, deps = {}) {
       // Not an X post; treat as a web page.
     }
     let target;
-    try { target = new URL(String(raw).trim()); }
+    try { target = normalizeTargetUrl(raw); }
     catch (error) { return reply(400, `${error.message}\n`); }
     try {
       await validateTarget(target.href, { selfHost: url.hostname, resolveHost: deps.resolveHost });

@@ -110,6 +110,17 @@ function hostnameBlocked(host, selfHost) {
   return false;
 }
 
+const OPAQUE_SCHEMES = /^(mailto|javascript|data|file|about|blob):/i;
+
+export function normalizeTargetUrl(input) {
+  const value = String(input ?? '').trim();
+  let normalized;
+  if (value.startsWith('//')) normalized = `https:${value}`;
+  else if (/^[a-z][a-z0-9+.-]*:\/\//i.test(value) || OPAQUE_SCHEMES.test(value)) normalized = value;
+  else normalized = `https://${value}`;
+  return new URL(normalized);
+}
+
 function parseTarget(urlString) {
   let url;
   try { url = new URL(String(urlString).trim()); }

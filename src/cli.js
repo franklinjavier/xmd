@@ -1,7 +1,7 @@
 import { render, modes } from './modes.js';
 import { parseUrl } from './parse-url.js';
 import { NotFoundError, NetworkError } from './fetch.js';
-import { renderPage, BlockedTargetError, UnsupportedTypeError } from './page.js';
+import { renderPage, normalizeTargetUrl, BlockedTargetError, UnsupportedTypeError } from './page.js';
 const help = 'Usage: xmd <x-post-url|id|any-url> [--mode post|thread|ancestors|replies]\nOptions: -m, --mode MODE; -h, --help';
 export async function main(args = process.argv.slice(2)) {
   let validated = false;
@@ -26,8 +26,8 @@ export async function main(args = process.argv.slice(2)) {
     if (isPost) {
       validated = true;
       markdown = await render(input, mode);
-    } else if (typeof input === 'string' && /^https?:\/\//i.test(input.trim())) {
-      markdown = await renderPage(input);
+    } else if (typeof input === 'string' && input.trim()) {
+      markdown = await renderPage(normalizeTargetUrl(input).href);
     } else {
       throw parseError || new Error(help);
     }
