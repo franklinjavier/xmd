@@ -11,8 +11,8 @@
   "scripts": {
     "test": "node --test test/",
     "icons": "node scripts/gen-icons.mjs",
-    "dev": "wrangler dev",
-    "deploy": "wrangler deploy"
+    "dev": "bunx wrangler dev",
+    "deploy": "bunx wrangler deploy"
   },
   "engines": {
     "node": ">=26"

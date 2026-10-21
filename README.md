@@ -87,11 +87,11 @@ curl -G 'https://xmd.imfrank.dev/' --data-urlencode 'url=https://example.com'
 
 ## CLI
 
-Requires Node >= 26.
+bun is the package manager. The `xmd`/`x-md` commands run on Node >= 26 (the bin uses a `node` shebang), so Node 26+ must be on PATH.
 
 ```sh
-npm install -g github:franklinjavier/xmd
-# or: git clone https://github.com/franklinjavier/xmd && cd xmd && npm link
+bun add -g github:franklinjavier/xmd
+# or: git clone https://github.com/franklinjavier/xmd && cd xmd && bun install && bun link
 
 xmd https://x.com/jack/status/2110421175528775685
 xmd --mode ancestors 2110642522355638381
@@ -130,11 +130,11 @@ The host must be an explicit IP (wildcards refused) so you bind it to a private 
 ## Self-host on Cloudflare
 
 ```sh
-npm install
-npx wrangler deploy
+bun install
+bunx wrangler deploy
 ```
 
-The Worker needs the `ai` and `browser` bindings and `nodejs_compat`, all declared in `wrangler.jsonc`. `@cloudflare/puppeteer` is the only npm runtime dependency (used by the Worker browser engine; a global CLI install pulls it). It serves `/favicon.ico`, `/favicon.png`, `/apple-touch-icon.png`, and `/icon-512.png`. The free plan is enough. `wrangler.jsonc` also declares a Rate Limiting binding named `RATE_LIMITER` (`namespace_id` must be unique in your account). The in-isolate memory limiter always applies; without the binding only that layer is used.
+The Worker needs the `ai` and `browser` bindings and `nodejs_compat`, all declared in `wrangler.jsonc`. `@cloudflare/puppeteer` is the only runtime dependency (used by the Worker browser engine; a global install pulls it). It serves `/favicon.ico`, `/favicon.png`, `/apple-touch-icon.png`, and `/icon-512.png`. The free plan is enough. `wrangler.jsonc` also declares a Rate Limiting binding named `RATE_LIMITER` (`namespace_id` must be unique in your account). The in-isolate memory limiter always applies; without the binding only that layer is used.
 
 ## Config
 
@@ -149,8 +149,8 @@ Credits: [FxTwitter](https://github.com/FixTweet/FxTwitter).
 ## Testing
 
 ```sh
-npm test
-XMD_SKIP_LIVE=1 npm test   # skip the live FxTwitter check
+bun run test
+XMD_SKIP_LIVE=1 bun run test   # skip the live FxTwitter check
 ```
 
 ## License
