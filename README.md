@@ -1,6 +1,6 @@
 # xmd
 
-Turn X (Twitter) posts into clean Markdown, via the public FxTwitter API. No X login, no API keys. The CLI and local Node server have zero npm runtime dependencies.
+Turn X (Twitter) posts into clean Markdown, via the public FxTwitter API. No X login, no API keys. The CLI has one runtime dependency, `@cloudflare/puppeteer` (used by the Worker's browser engine), so a global install pulls ~32 MB.
 
 ## Hosted endpoint
 
@@ -134,7 +134,7 @@ npm install
 npx wrangler deploy
 ```
 
-The Worker needs the `ai` and `browser` bindings and `nodejs_compat`, all declared in `wrangler.jsonc`. `@cloudflare/puppeteer` is the only runtime dependency and is used only by the Worker. The free plan is enough. `wrangler.jsonc` also declares a Rate Limiting binding named `RATE_LIMITER` (`namespace_id` must be unique in your account). The in-isolate memory limiter always applies; without the binding only that layer is used.
+The Worker needs the `ai` and `browser` bindings and `nodejs_compat`, all declared in `wrangler.jsonc`. `@cloudflare/puppeteer` is the only npm runtime dependency (used by the Worker browser engine; a global CLI install pulls it). It serves `/favicon.ico`, `/favicon.png`, `/apple-touch-icon.png`, and `/icon-512.png`. The free plan is enough. `wrangler.jsonc` also declares a Rate Limiting binding named `RATE_LIMITER` (`namespace_id` must be unique in your account). The in-isolate memory limiter always applies; without the binding only that layer is used.
 
 ## Config
 

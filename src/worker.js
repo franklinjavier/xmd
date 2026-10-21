@@ -2,10 +2,32 @@ import { parseUrl } from './parse-url.js';
 import { render as defaultRender, modes } from './modes.js';
 import { NotFoundError, NetworkError } from './fetch.js';
 import { VERSION } from './version.js';
+import { ICONS } from './icons.js';
 import {
   fetchPage, htmlToMarkdown, extractTitle, looksJsOnly, visibleText, wrapPage,
   validateTarget, normalizeTargetUrl, USAGE, UnsupportedTypeError,
 } from './page.js';
+
+const decodedIcons = new Map();
+
+function iconResponse(path) {
+  const spec = ICONS[path];
+  let body = decodedIcons.get(path);
+  if (!body) {
+    const bin = atob(spec.b64);
+    body = new Uint8Array(bin.length);
+    for (let i = 0; i < bin.length; i++) body[i] = bin.charCodeAt(i);
+    decodedIcons.set(path, body);
+  }
+  return new Response(body, {
+    status: 200,
+    headers: {
+      'Content-Type': spec.type,
+      'Cache-Control': 'public, max-age=604800, immutable',
+      'X-Content-Type-Options': 'nosniff',
+    },
+  });
+}
 
 const DEADLINE_MS = 45_000;
 const CACHE_MAX_AGE = 300;
@@ -236,6 +258,8 @@ export async function handle(request, env = {}, ctx = {}, deps = {}) {
   const url = new URL(request.url);
   const path = url.pathname.replace(/[\x00-\x1f\x7f]/g, '');
   if (path === '/health') return reply(200, 'ok');
+  const iconPath = path === '/favicon-32.png' ? '/favicon.png' : path;
+  if (ICONS[iconPath]) return iconResponse(iconPath);
 
   async function servePost(id, mode) {
     return serveRendered(request, env, ctx, deps, cache, cacheKey(mode, id), signal => renderer(id, mode, undefined, { signal }), 'x');

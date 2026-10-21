@@ -38,6 +38,25 @@ test('GET /health returns 200 ok and is not cached', async () => {
   assert.equal(response.headers.get('x-xmd-cache'), null);
 });
 
+test('GET /favicon.ico and /apple-touch-icon.png skip limiter and AI', async () => {
+  const env = {
+    RATE_LIMITER: { async limit() { return { success: false }; } },
+    AI: { run() { throw new Error('ai must not run'); } },
+  };
+  const ico = await call('/favicon.ico', { env, render: async () => assert.fail('icon must not render') });
+  assert.equal(ico.status, 200);
+  assert.match(ico.headers.get('content-type'), /^image\//);
+  const icoBytes = new Uint8Array(await ico.arrayBuffer());
+  assert.ok(icoBytes.byteLength > 0);
+  assert.deepEqual([...icoBytes.subarray(0, 4)], [0x00, 0x00, 0x01, 0x00]);
+
+  const png = await call('/apple-touch-icon.png', { env, render: async () => assert.fail('icon must not render') });
+  assert.equal(png.status, 200);
+  assert.match(png.headers.get('content-type'), /image\/png/);
+  const pngBytes = new Uint8Array(await png.arrayBuffer());
+  assert.deepEqual([...pngBytes.subarray(0, 8)], [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+});
+
 test('/md post 200 MISS then HIT; renderer called once', async () => {
   const cache = memoryCache();
   let calls = 0;

@@ -10,6 +10,7 @@
   },
   "scripts": {
     "test": "node --test test/",
+    "icons": "node scripts/gen-icons.mjs",
     "dev": "wrangler dev",
     "deploy": "wrangler deploy"
   },
